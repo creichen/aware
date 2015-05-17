@@ -1,0 +1,243 @@
+    `aware' displays information, while getting in your way as little
+  as possible.  It uses GTK to pop up a message in the upper right
+  corner of your screen.  You can decide what contents you want.
+  Multiple calls accumulate contents or override old entries.
+
+    `aware' tries to be minimal: its job is to display information
+  while integrating with other UNIX tools.  It only depends on
+  Python2, GTK, and UNIX.  It plays well with tiling window managers
+  such as xmonad and (untested, but probably) ratpoison.
+
+    You can use it to display the time, system load, battery status,
+  and network connectivity on demand, or to ping yourself when your
+  tea is ready.  Or to keep an up-to-date display of the number of
+  mails in your inbox.  And you can dismiss it whenever you've seen
+  enough.
+
+
+FEATURES
+
+  - doesn't grab focus
+  - doesn't use up screen real estate unless needed
+  - doesn't depend on any window manager or desktop environment
+  - information stays up until you explicitly dismiss it
+  - easy to use
+  - plays well with scripting
+  - can display text with different font and colour options
+  - can display images, with support for scaling
+  - embedded script execution, including updates at regular intervals
+  - can update old entries with new information
+
+
+ALTERNATIVES
+
+  xmessage: grabs focus, wants to be managed by the WM.  xmessage can
+	do many things that aware cannot, such as request user input.
+	It serves a different purpose.
+
+  dbus: a powerful bus system used by some desktop envirionments.  It
+	sends messages and has some tools that display these messages.
+	If you live in a dbus environment AND can make those tools
+	work, you may be able to replicate `aware'.  Or not.  I gave up
+	trying.
+
+  task bars:  many desktop environments have task bars that display the
+	time and can also show notifications.  By their very nature,
+	they take up screen real estate; I also haven't run across any
+	that are easy to script (though I haven't really tried looking
+	very hard).
+  	    
+
+INSTALLATION
+
+    Run `make install', or just use `aware' right to whereever you
+  downloaded it in your file system.
+
+
+USAGE
+
+    To pop up a message saying `hello':
+
+	aware hello
+
+    To close the display:
+
+	aware -s
+
+    Note that every new message will disable `aware -s' for a short
+  safety delay (or `cooldown') to prevent you from accidentally
+  dismissing new information.  If you don't want that, run:
+
+	aware --force-stop
+
+    Each `aware' parameter gets its own line.  Each line may just be
+  plain text (as in the above), or it may be a display specification.
+  Display specifications start with a `+' character, followed by a
+  display type:
+
+	aware +img=~/x.png
+
+    uses the dusplay type `img' to say that you want to display the
+  specified image.  aware bounds the maximum image size and may scale
+  down the image if it exceeds the maximum proportions; you can
+  override this with display type parameters.  For example,
+
+	aware +script=date
+
+    will ask the UNIX tool `date' to print the current time and
+  display that date.  You can use the parameter `repeat' to
+  continuously update this information:
+
+	aware '+script(repeat=1)=date'
+
+    To update an earlier message, you can use the `id' parameter:
+
+	aware '+text(colour=red, id=1)= red text with ID'
+
+	aware'+text(colour=green, id=1)= and now we have green text'
+
+    This works even if you have many messages active.  You can use
+  this both to update and to avoid duplication.  For example, you can
+  set up a custom notification script that always prints the system
+  time and wifi connection when you receive a notification (all
+  notifications will have to go through that script, of course).
+  Without ids, getting two messages would mean that you get the system
+  time and wifi connectivity displayed twice.  Using ids allows you to
+  merely override the old information.
+
+
+DISPLAY TYPES AND DISPLAY TYPE PARAMETERS
+
+    aware supports several display types:
+    
+	+text=foo            Same as just "foo"
+   
+	+img=~/x.png         Display image x.png (bounds size, see below)
+
+	+script=date         Execute `date' and use the result as if it
+			     had been a display specification
+
+	+line
+	foo
+	bar
+	+endline             Align "foo" and "bar" in a single line
+
+    You can configure these dusplay types as follows:
+
+	+text(colour=red)=...        Change font colour
+	+text(colour=fixed 12)=...   Change font style
+
+	+img(maxwidth=100)=...       Limit image width.  Scale down
+	                             proportionally if exceeded.
+	+img(maxheight=100)=...      Limit image height.  Scale down
+	                             proportionally if exceeded.
+	+img(width=10)=...           Force image width
+	+img(height=10)=...          Force image height
+
+	+script(repeat=2.5)=...      Re-run script every 2.5 seconds and update
+
+
+CONFIGURATION
+
+  ~/.aware stores configuration options.  It supports the following
+options:
+
+
+  OPTION			DEFAULT		MEANING
+
+  pipe_file_name 		~/.aware-pipe	named pipe for server
+  						communication
+  pid_file_name			~/.aware-pid	PID file for server
+  update_safety_delay		1.5		safety delay (in s)
+  font				'Sans Serif 8'	default font
+  bar_color			'grey'		window frame colour
+  default_fg_color		'white'		default text colour 
+  default_bg_color		'black'	  	background colour
+  column_separator_width	5		pixels between columns
+  line_separator_width		0		pixels between lines
+  max_width			768		default max img width
+  max_height			256		default max img height
+
+
+TODO
+
+  There are a bunch of nice-to-have tasks I'd like to do if I get
+around to doing them.  Feel free to pre-empt me on those, though!
+
+- log errors to file when running in daemon (default) mode
+  Right now, errors are ignored once daemon mode has started.
+
+- generally improve error handling.
+
+- have `aware' auto-execute an `~/.awarerc' script to fill in the
+  first bits of every message.
+
+- support for polling on updates.  `aware -p <id>' would block until
+  it receives the next update to that id, allowing scripts to use
+  `aware' as a dispatch mechanism.
+
+- network transparency, though I don't have the slightest idea of how
+  that could be accomplished.  Perhaps by using the clipboard to
+  communicate data via the X11 protocol?  Which would require
+  accepting `paste' events, and discovering the window to begin with.
+  Not sure if that latter bit is possible without WM support.
+
+
+FAQ
+
+- Why `aware'?
+
+  Aware Witnesses And Reports Events.  Thus, it serves to make users
+  cognisant of actions that have transpired.  `aware' is also the
+  Japanese word for grief and sorrow, accumulated over decades of
+  forgotten laundry and burnt rice.  Let us hope that this
+  notification visualiser brings an end to the era of forgotten
+  things.
+
+
+- How do I pop up a message with a time delay?
+
+  Use the UNIX `sleep' command:
+
+	sleep 180; aware tea
+
+  I use a small script that parses `minute:second' bits, for
+  convenience.  Time delays are not aware's job.
+
+
+- Will you accept patches that make it grab focus or allow user input?
+
+  No.  xmessage and its ilk do a fine job at interaction.  aware is
+  for notifications only.
+
+
+- Why python?
+
+  It seemed to be the fastest way to get this thing done AND keep
+  requirements low.  This thing is a bit systems-y, so going
+  higher-level seemed like a bad idea, and lower-level would've slowed
+  down development further.
+
+  That being said, if you want to re-implement it in C, be my guest.
+  
+
+- Will it work on Windows / OS X / MULTICS / PalmOS / AmigaOS / System360?
+
+  I have no idea.  You tell me.  (Probably OS X.  Probably not the others.)
+
+
+- Why is the formatting language so clunky?
+
+  There are as many formatting languages out there as there are stars
+  in the galaxy (roughly).  The only one I personally care for is
+  LaTeX, and it's horrible.  So I went for something that would be
+  easy to remember and easy to implement.  If you have a really clever
+  alternative design, I'm willing to accept patches.
+
+
+- Where are the unit tests?
+
+  I am embarrassed to admit that I skipped those for this one, as it
+  seemed simple enough.  I promise to add them as bug reports come in
+  (as long as the bugs are testable with a reasonable amount of
+  refactoring).

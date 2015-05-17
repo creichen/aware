@@ -1,0 +1,193 @@
+.\" (C) Copyright 2015 Christoph Reichenbach
+.\" (creichen at gmail.com)
+.\"
+.\" Permission is granted to make and distribute verbatim copies of this
+.\" manual provided the copyright notice and this permission notice are
+.\" preserved on all copies.
+.\"
+.\" Permission is granted to copy and distribute modified versions of this
+.\" manual under the conditions for verbatim copying, provided that the
+.\" entire resulting derived work is distributed under the terms of a
+.\" permission notice identical to this one
+.\" 
+.\" Since FreeSCI is constantly changing, this manual page may be
+.\" incorrect or out-of-date.  The authors assume no responsibility for
+.\" errors or omissions, or for damages resulting from the use of the
+.\" information contained herein.  The authors may not have taken the same
+.\" level of care in the production of this manual, which is licensed free
+.\" of charge, as they might when working professionally.
+.\" 
+.\" Formatted or processed versions of this manual, if unaccompanied by
+.\" the source, must acknowledge the copyright and authors of this work.
+.\"
+.TH aware 1 "17 May 2015" "aware 0.1.0" aware
+
+.SH NAME
+aware \- flexible information display for X11
+
+
+.SH DESCRIPTION
+.P
+\fBaware\fR displays information without grabbing keyboard focus on X11 via GTK.
+
+.SH SYNOPSIS
+.B aware
+[\fI-s\fR] [\fI-m\fR] [\fImessages\fR] ...
+
+.SH OPTIONS
+
+.TP
+.BR \fImessages\fR
+One or more display specifications to display.  Display specifications
+can be plain-text messages text or use special formatting.
+\fBaware\fR prints each display specification on an individual line
+(except for \fI+line\fR, see below).  It treats display specifications
+starting with \fI+\fR specially:
+
+   +text=foo            Same as just "foo"
+   
+   +img=~/x.png         Display image x.png (bounds size, see below)
+
+   +script=date         Execute `date' and use the result as if it had been a display specification
+
+   +line
+   foo
+   bar
+   +endline             Align "foo" and "bar" in a single line
+
+.P
+The Idisplay types above, \fItext\fR, \fIimg\fR, \fIscript\fR,
+and \fIline\fR, permit further configuration:
+
+   +text(colour=red)=...        Change font colour
+   +text(colour=fixed 12)=...   Change font style
+
+   +img(maxwidth=100)=...       Limit image width.  Scale down proportionally if exceeded.
+   +img(maxheight=100)=...      Limit image height.  Scale down proportionally if exceeded.
+   +img(width=10)=...           Force image width
+   +img(height=10)=...          Force image height
+
+   +script(repeat=2.5)=...      Re-run script every 2.5 seconds and update
+
+.P
+The additional \fid\fR parameter is admissible for all display types.
+This parameter allows messages to be overwritten: any later message
+with the same \fid\fR id overwrites the old message.
+
+.P
+Multiple options can be combined using commata:
+
+   +text(colour= red, id=1)= red text with ID
+
+   +text(colour= green, id=1)= green text overwriting the old red text
+
+.P
+Passing \fI-\fR as sole message will make \fBaware\fR read lines from
+stdin.  Format is the same as before, with each input line
+corresponding to one command line argument.
+
+.TP
+.BR "\-\-version, \-v"
+Display version information and exit.
+
+.TP
+.BR "\-\-help, \-h"
+Display a short help text and exit.
+
+.TP
+.BR "\-\-message, \-m"
+Default action; displays the parameter display specifications.
+
+.TP
+.BR "\-\-stop, \-s"
+Stops displaying.  \fBaware\fR ignores this command for a short time
+(update_safety_delay) every time it receives an update, to prevent
+indavertent message loss.  Use "\-\-force\-stop" to override.
+
+.TP
+.BR "\-\-force\-stop"
+As "\-\-stop", but overrides the safety delay.
+
+.SH CONFIG FILE
+
+The configuration file \fI~/.aware\fR, if present, will override
+configuration options, listed here with their defaults:
+
+.TP
+.BR "pipe_file_name = ~/.aware-pipe"
+File to use for named-pipe communication with the server.
+
+.TP
+.BR "pid_file_name = ~/.aware-pid"
+File to use for storing the server process ID (PID).
+
+.TP
+.BR "update_safety_delay = 1.5"
+Safety delay (in seconds): when receiving a message, the server
+disables the "\-\-stop" command for this time interval.
+
+.TP
+.BR "font = 'Sans Serif 8'"
+Default text font.
+
+.TP
+.BR "bar_color = gray'"
+Colour of the window `frame border'.
+
+.TP
+.BR "default_fg_color =	'white'"
+Default text foreground colour.
+
+.TP
+.BR "default_bg_color =	'black'"
+Window background colour.
+
+.TP
+.BR "column_separator_width = 5"
+Number of pixels separating two adjacent entries in the same \fI+line\fR.
+
+.TP
+.BR "line_separator_width = 0"
+Number of pixels separating adjacent lines.
+
+.TP
+.BR "max_width = 768"
+Default maximum image width (cf. \fImaxwidth\fR for +img).
+
+.TP
+.BR "max_height = 256"
+Default maximum image height (cf. \fImaxheight\fR for +img).
+
+.SH EXAMPLES
+Some example uses:
+.PP
+.ne 3
+.nf
+.RS
+
+# print green text:
+
+  aware '+text(color=green)=this text is green'
+
+# a clock that updates itself every second:
+
+  aware '+script(update=1)=date'
+
+# tea timer
+
+  sleep 180; aware 'tea is ready'
+
+.RE
+.fi
+.PP
+
+
+.SH SEE ALSO
+.BR xmessage(1)
+
+.P
+Please refer to http://freesci.linuxgames.com's bug list section for a
+listing of all known and current bugs.
+
+.P
+This man page was written by Christoph Reichenbach.

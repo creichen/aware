@@ -1,0 +1,1149 @@
+#! /usr/bin/env python
+#
+# This file is Copyright (C) 2015 Christoph Reichenbach
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the
+#   Free Software Foundation, Inc.
+#   59 Temple Place, Suite 330
+#   Boston, MA  02111-1307
+#   USA
+#
+# The author can be reached as "creichen" at the usual gmail server.
+
+
+from __future__ import print_function
+import ConfigParser
+import argparse
+import cairo
+import fileinput
+import gobject
+import gtk
+import os
+import os.path
+import pango
+import pygtk
+import signal
+import subprocess
+import sys
+import threading
+import time
+import traceback
+
+pygtk.require('2.0')
+
+
+################################################################################
+# Basic information and utilities
+################################################################################
+
+VERSION = '0.1.0'
+CONFIG_FILE = os.path.expanduser('~/.aware')
+CONTROL_CHAR = '+'  # as in +text, +img, ...
+
+# Primitive logging interface
+# When running in daemon mode, we currently discard all output.
+
+log_output = sys.stderr
+
+def log(*args):
+    '''Writes all arguments to the log output stream.'''
+    print(*args, file=log_output)
+
+
+def parse_color(colname, default = 'white'):
+    '''Parses the specified colour.  Prints an error message and backs up to a default if needed.'''
+    colname.strip()
+    if len(colname) > 2 and colname[0] == colname[-1] and colname[0] in '\'\"':
+        colname = colname[1:len(colname) - 1]
+    try:
+        return gtk.gdk.color_parse(colname)
+    except Exception:
+        log('Unknown color "%s"' % colname)
+        return gtk.gdk.color_parse(default)
+
+
+################################################################################
+# Confiugration
+################################################################################
+
+class FakeSecHead(object):
+    '''Helper class for parsing config data.'''
+    # based on on a solution by Alex Martelli, http://stackoverflow.com/questions/2819696/parsing-properties-file-in-python/2819788#2819788
+    def __init__(self, f, section):
+        self.f = f
+        self.header = '[' + section + ']\n'
+
+    def readline(self):
+        if self.header:
+            try: 
+                return self.header
+            finally: 
+                self.header = None
+        else: 
+            return self.f.readline()
+
+
+class Config(object):
+    '''Configuration management class.'''
+
+    def __init__(self):
+        '''Initialise config data.  Instantiate once, and the class static fields will be configured.'''
+        section = 'X'
+        defaults = {}
+        for d in Config.__dict__:
+            if not d.startswith('_'):
+                v = Config.__dict__[d]
+                if type(v) != str:
+                    v = str(v)
+                defaults[d] = v
+        config = ConfigParser.SafeConfigParser(defaults)
+        conf = {}
+        try:
+            f = open(CONFIG_FILE, 'r')
+            config.readfp(FakeSecHead(f, section))
+            conf = config.items(section)
+        except IOError:
+            pass
+        for (k, v) in conf:
+            if k not in Config.__dict__:
+                log('Unknown option "%s"' % k)
+                continue
+            ov = Config.__dict__[k]
+            try:
+                if type(ov) is int:
+                    v = int(v)
+                elif type(ov) is float:
+                    v = float(v)
+                setattr(Config, k, v)
+            except Exception, e:
+                log(e.message)
+                log('Expected %s for option %s but got "%s"' % (type(ov).__name__, k, v))
+    
+    pipe_file_name = os.path.expanduser('~/.aware-pipe')
+    pid_file_name = os.path.expanduser('~/.aware-pid')
+    update_safety_delay = 1.5   # amount of seconds after an update during which we reject SHUTDOWN message
+    font = 'Sans Serif 8'
+    bar_color = 'gray'
+    default_fg_color = 'white'
+    default_bg_color = 'black'
+    column_separator_width = 5
+    line_separator_width = 0
+    max_width = 768
+    max_height = 256
+
+
+################################################################################
+# Display objects for visualising strings, images etc.
+################################################################################
+
+class DObject(object):
+    '''Represents an entity-to-visualise.'''
+    
+    def __init__(self):
+        self.id = None # unique ID, permits overriding
+        self.window = None
+
+    def get_size(self):
+        '''return (width, upper_height, lower_height)
+        where upper_height is height to baseline and lower_height is height below'''
+        pass
+
+    def draw_to(self, cr, x, y):
+        '''Draw yourself to the given context and coordinates'''
+        self.draw(cr, x, y + self.get_baseline())
+
+    def draw(self, cr, x, y):
+        '''Draw yourself to the given context and coordinates (y refers to the baseline position)'''
+        pass
+
+    def set_window(self, window):
+        '''Set the window to draw this widget to'''
+        pass
+
+    def get_width(self):
+        return self.get_size()[0]
+
+    def get_height(self):
+        size = self.get_size()
+        return size[1] + size[2]
+
+    def get_baseline(self):
+        return self.get_size()[1]
+
+    def configure(self, key, value):
+        '''Configure object to set key = value; return True if spec is appropriate'''
+        if key == 'id':
+            self.id = value
+            return True
+        return False
+
+    def stop(self):
+        '''Stops any background tasks that the DObject is executing'''
+        pass
+
+    def contained_elements(self):
+        '''Retrieves all inner elements (for containers)'''
+        return []
+
+    def configure_end(self):
+        '''Final sanity checks after all config is set'''
+        return True
+    
+
+class DImage(DObject):
+    '''A graphical image file (png, jpeg, ...) to display (+img)'''
+    
+    def __init__(self, image, width=None, height=None):
+        DObject.__init__(self)
+        image = image.strip()
+        try:
+            self.source_pixbuf = gtk.gdk.pixbuf_new_from_file(os.path.expanduser(image))
+        except Exception, e:
+            log(e.message)
+            log('Failed to load image "%s"' % image)
+            raise e
+
+        self.background_color = None
+        self.width = self.source_pixbuf.get_width()
+        self.height = self.source_pixbuf.get_height()
+        self.force_width = None
+        self.force_height = None
+        self.max_width = Config.max_width
+        self.max_height = Config.max_height
+        self.pixbuf = None
+        self.configure_end() # scale if needed
+
+    def change_size(self):
+        '''Recompute size and scale, if needed'''
+        def fix(x, default):
+            if x is None:
+                return default
+            elif x < 1:
+                return 1
+            else:
+                return int(x)
+        
+        self.width = fix(self.width, self.source_pixbuf.get_width())
+        self.height = fix(self.height, self.source_pixbuf.get_height())
+        
+        if self.pixbuf is not None and self.pixbuf.get_width() == self.width and self.pixbuf.get_height() == self.height:
+            return
+
+        self.pixbuf = self.source_pixbuf.scale_simple(self.width, self.height, cairo.FILTER_BEST)
+        
+    def get_size(self):
+        return (self.width, self.height, 0)
+
+    def draw(self, cr, x, y):
+        y -= self.get_baseline()
+
+        cr.save()
+        # draw background, if requested
+        if self.background_color is not None:
+            cr.rectangle(x, y,
+                         self.width, self.height)
+            cr.set_operator(cairo.OPERATOR_SOURCE)
+            cr.set_source_color(self.background_color)
+            cr.fill()
+
+        cr.rectangle(x, y,
+                     self.width, self.height)
+        cr.set_source_pixbuf(self.pixbuf, x, y)
+        cr.set_operator(cairo.OPERATOR_OVER)
+        cr.fill();
+	cr.restore();
+
+    def configure(self, key, value):
+        if key == 'width':
+            self.force_width = int(value)
+        elif key == 'height':
+            self.force_height = int(value)
+        elif key == 'maxwidth':
+            self.max_width = int(value)
+        elif key == 'maxheight':
+            self.max_height = int(value)
+        elif key == 'background':
+            self.background_color = parse_color(value, 'black')
+        else:
+            return DObject.configure(self, key, value)
+        return True
+
+    def configure_end(self):
+        downscale = None
+        
+        if self.force_width is not None:
+            self.width = self.force_width
+        elif self.width > self.max_width:
+            downscale = float(self.max_width) / float(self.width)
+            
+        if self.force_height is not None:
+            self.height = self.force_height
+        elif self.height > self.max_height:
+            d = float(self.max_height) / float(self.height)
+            if downscale is None:
+                downscale = d
+            else:
+                downscale = min(d, downscale)
+                
+        if downscale is not None:
+            self.width = int(self.source_pixbuf.get_width() * downscale)
+            self.height = int(self.source_pixbuf.get_height() * downscale)
+
+        self.change_size()
+        return True
+
+        
+class DText(DObject):
+    '''Character string to display (+text)'''
+    
+    def __init__(self, text, color=None):
+        DObject.__init__(self)
+        self.text = text
+        self.font = Config.font
+        if color is None:
+            color = Config.default_fg_color
+        self.color = parse_color(color)
+
+    def set_window(self, window):
+        self.layout = window.create_pango_layout(self.text)
+        self.layout.set_font_description(pango.FontDescription(self.font))
+
+    def get_size(self):
+        bo = int(self.layout.get_iter().get_baseline() / pango.SCALE)
+        width = int(self.layout.get_size()[0] / pango.SCALE)
+        height = int(self.layout.get_size()[1] / pango.SCALE)
+        return (width, bo, height - bo)
+
+    def configure(self, key, value):
+        if key == 'font':
+            self.font = value
+        elif key in ['color', 'colour']:
+            self.color = parse_color(value)
+            if self.color is None:
+                return False
+        else:
+            return DObject.configure(self, key, value)
+        return True
+
+    def configure_end(self):
+        self.text = self.text.strip()
+        return True
+
+    def draw(self, cr, x, y):
+        cr.set_source_color(self.color)
+        cr.move_to(x, y - self.get_baseline())
+        cr.show_layout(self.layout)
+
+    def __str__(self):
+        return 'DText(%s)' % self.text
+
+
+class DContainer(DObject):
+    '''Abstract container class'''
+    
+    def __init__(self, elements=None):
+        DObject.__init__(self)
+        if elements is None:
+            elements = []
+        self.id_map = {}
+        self.elements = elements
+
+    def update_element(self, index, element):
+        self.elements[index].stop()
+        self.elements[index] = element # and discard old element
+        
+    def register(self, index, element):
+        '''new element added at index'''
+        pass
+
+    def append(self, element):
+        if self.window is not None:
+            element.set_window(self.window)
+        if element.id != None:
+            if element.id in self.id_map:
+                index = self.id_map[element.id]
+                self.update_element(index, element)
+                self.register(index, element)
+                return
+            else:
+                self.id_map[element.id] = len(self.elements)
+        self.elements.append(element)
+        self.register(len(self.elements) - 1, element)
+
+    def set_window(self, window):
+        self.window = window
+        for l in self.elements:
+            l.set_window(window)
+
+    def contained_elements(self):
+        return self.elements
+
+            
+class DScript(DContainer):
+    '''Script container (+script).  Contains a single element that may update itself.'''
+    
+    implicit_ids = 0	# used to assign unique IDs to contained scripts
+
+    def __init__(self, script):
+        DContainer.__init__(self)
+        self.implicit_id = ' ' + str(DScript.implicit_ids)
+        DScript.implicit_ids += 1
+        self.script = script
+        self.repeat = None
+        self.timer = None # for repeat updates
+        self.thread_lock = threading.Lock()
+        self.thread_cancel = [False] # for cancelling thread execution
+        
+        dobj = DText('') # start out with empty text, fill in later with script result
+        dobj.id = self.implicit_id
+        self.append(dobj)
+
+    def configure(self, key, value):
+        if key == 'repeat':
+            self.repeat = float(value)
+        else:
+            return DObject.configure(self, key, value)
+        return True
+
+    def stop(self):
+        self.thread_lock.acquire()
+        if self.timer is not None:
+            self.timer.cancel()
+        self.thread_cancel[0] = True
+        self.thread_lock.release()
+
+    def get_size(self):
+        return self.elements[0].get_size()
+
+    def draw(self, cr, x, y):
+        return self.elements[0].draw(cr, x, y)
+
+    def start_repeat(self):
+        '''Set up timer to call update() after self.repeat seconds have elapsed'''
+        if self.repeat is None or self.repeat < 0.001:
+            return
+        if self.timer is not None: # only one timer at a time
+            return
+        self.timer = threading.Timer(self.repeat, self.update, [])
+        self.timer.start()
+
+    def update(self):
+        '''Executed for every repeat tick'''
+
+        self.thread_lock.acquire()
+        self.timer = None
+        def do_update(container, script, myid, repeat, lock, cancel):
+            lock.acquire()
+            if cancel[0]:
+                lock.release()
+                return
+            
+            container.start_repeat()
+            dobj = None
+            try:
+                strings = subprocess.check_output(self.script, shell=True)
+                sp = SpecProcessor(strings)
+                if sp.parse():
+                    dobj = DBox()
+                    sp.add_dobjects(dobj)
+
+            except subprocess.CalledProcessError:
+                dobj = DText('<failed: ' + self.script + '>', 'red')
+
+            if dobj is not None:
+                dobj.id = myid
+                container.append(dobj)
+                global notifier
+                notifier.update()
+            lock.release()
+
+        # start in separate thread so we don't have to wait for script to finish
+        self.thread_cancel[0] = False
+        thread = threading.Thread(target = do_update, args = [self, self.script, self.implicit_id, self.start_repeat, self.thread_lock, self.thread_cancel])
+        thread.start()
+        self.thread_lock.release()
+        
+    def configure_end(self):
+        if self.id is None:
+            self.id = self.implicit_id
+        self.update()
+        self.start_repeat()
+        return True
+
+
+class DLine(DContainer):
+    '''Line of consecutive elements (+line)'''
+
+    def __init__(self, elements=None):
+        DContainer.__init__(self, elements)
+
+    def get_size(self):
+        result = [0, 0, 0]
+        for e in self.elements:
+            size = e.get_size()
+            if result[0] > 0:
+                result[0] += Config.column_separator_width
+            result[0] += size[0]
+            result[1] = max(result[1], size[1])
+            result[2] = max(result[2], size[2])
+        return tuple(result)
+    
+    def draw(self, cr, x, y):
+        for e in self.elements:
+            (width, e_baseline, _) = e.get_size()
+            e.draw(cr, x, y)
+            x += width + Config.column_separator_width
+
+    def __str__(self):
+        return 'line'+str(id(self))+'[' + ', '.join(str(s) for s in self.elements) + ']'
+
+
+class DBox(DContainer):
+    '''Multiple rows of elements'''
+    def __init__(self, elements=None):
+        DContainer.__init__(self, elements)
+
+    def update_element(self, index, element):
+        if self.elements[index].id == element.id:
+            self.elements[index].stop()
+            self.elements[index] = element # and discard old element
+        else:
+            self.elements[index].append(element) # indirectly recurse into update_element handler for this dline
+
+    def register(self, index, dline):
+        # for contained dlines: register ids
+        for n in dline.contained_elements():
+            if n.id is not None:
+                self.id_map[n.id] = index
+            
+    def get_size(self):
+        width = 0
+        height = 0
+        for l in self.elements:
+            width = max(width, l.get_width())
+            height += Config.line_separator_width + l.get_height()
+        return (width, 0, height)
+    
+    def draw(self, cr, x, y):
+        for l in self.elements:
+            l.draw_to(cr, x, y)
+            y += Config.line_separator_width + l.get_height()
+
+    def __str__(self):
+        return 'box[' + ', '.join(str(s) for s in self.elements) + ']'
+
+
+################################################################################
+# Our GTK widget
+################################################################################
+
+class AwareWindow(gtk.Window):
+    '''Notification window'''
+
+    def __init__(self, dobject):
+        '''Initialise window with dobject to display'''
+        gtk.Widget.__init__(self)
+        # The following seems to look fine with text:
+        self.pad_top = 0	# number of pixels to pad
+        self.pad_bottom = 2
+        self.pad_left = 5
+        self.pad_right = 2
+
+        self.set_dobject(dobject)
+        self.update()
+
+        self.root_window = gtk.gdk.get_default_root_window()
+        self.root_size = self.root_window.get_size()
+
+    def get_dobject(self):
+        return self.dobject
+
+    def set_dobject(self, dobject):
+        self.dobject = dobject
+        self.update()
+
+    def get_pad_width(self):
+        '''Total horizontal padding'''
+        return self.pad_left + self.pad_right
+
+    def get_pad_height(self):
+        '''Total vertical padding'''
+        return self.pad_top + self.pad_bottom
+
+    def update(self):
+        '''Recompute size and trigger redraw'''
+        if self.dobject is not None:
+            self.dobject.set_window(self)
+            self.width = self.dobject.get_width() + self.get_pad_width()
+            self.height = self.dobject.get_height() + self.get_pad_height()
+            self.resize(self.width, self.height)
+            if self.window is not None:
+                self.window.move_resize(self.root_size[0] - self.width, 0,
+                                        self.width, self.height)
+            self.queue_draw()
+
+    def do_realize(self):
+        '''GTK widget window realisation'''
+        self.set_flags(gtk.REALIZED)
+
+        window = gtk.gdk.Window(self.root_window, self.width, self.height,
+                                window_type = gtk.gdk.WINDOW_TOPLEVEL,
+                                event_mask = gtk.gdk.EXPOSURE_MASK,
+                                wclass = gtk.gdk.INPUT_OUTPUT,
+                                x = self.root_size[0], y = 0,
+                                override_redirect = True)
+        window.set_keep_above(True)
+        window.set_type_hint(gtk.gdk.WINDOW_TYPE_HINT_NOTIFICATION)
+        self.window = window
+
+        self.window.set_user_data(self)
+
+        self.style.set_background(self.window, gtk.STATE_NORMAL)
+        self.update()
+        
+
+    def do_unrealize(self):
+        '''GTK widget window unrealisation'''
+        # I doubt that this ever gets called for this widget
+        self.window.set_user_data(None)
+
+    def do_size_allocate(self, allocation):
+        '''GTK notification as for what region is visible/to be redrawn'''
+        self.allocation = allocation
+
+    def do_expose_event(self, event):
+        '''GTK notification that we should redraw'''
+        
+        x, y, w, h = self.allocation
+        
+        # clear background
+        cr = self.window.cairo_create()
+        cr.save()
+        cr.rectangle(0, 0, self.width, self.height)
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_color(self.style.bg[self.state])
+        cr.fill()
+        cr.restore()
+
+        # draw frame
+        cr.save()
+        cr.set_source_color(self.style.fg[self.state])
+        cr.rectangle(2, -2,
+                     self.width, self.height)
+        cr.set_line_width(1.0)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        cr.stroke()
+        cr.restore()
+
+        # draw dobject
+        self.dobject.draw_to(cr, self.pad_left, self.pad_top)
+
+        
+gobject.type_register(AwareWindow)
+
+notifier = None	# global AwareWindow
+
+
+def update_notifier(message):
+    '''Parse message and append it to the notifier if set'''
+    try:
+        sp = SpecProcessor(message)
+        if sp.parse():
+            sp.add_dobjects(notifier.get_dobject())
+        notifier.update()
+    except Exception, e:
+        print(e.message, file=sys.stderr)
+        log(traceback.format_exc())
+        return False
+    return True
+
+
+################################################################################
+# Input spec parsing and processing
+################################################################################
+
+class ParseError(Exception):
+    def __init__(self, msg):
+        Exception.__init__(self, msg)
+
+
+class TokenStream(object):
+    '''Represents a token stream and an iteration over it'''
+
+    def __init__(self, tokenlist):
+        self.tokens = tokenlist
+        self.pos = 0
+        self.err = log
+
+    def set_err(self, fn):
+        self.err = fn
+
+    def get_tokens(self):
+        return self.tokens
+
+    def has_next(self):
+        return self.pos < len(self.tokens)
+
+    def peek(self):
+        if self.has_next():
+            return self.tokens[self.pos]
+
+    def next(self):
+        if self.has_next():
+            r = self.tokens[self.pos]
+            self.pos += 1
+            return r
+        else:
+            self.err('incomplete specification')
+
+    def concat_until(self, acceptset, failset):
+        result = ''
+        while True:
+            s = self.next()
+            if s in acceptset:
+                return (result, s)
+            elif s in failset:
+                self.err('Unexpected "%s"' % s)
+            else:
+                if result == '':
+                    result = s
+                else:
+                    result = result + ' ' + s
+                            
+        
+class SpecProcessor(object):
+    '''Parses specification input and produces an output DObject'''
+    
+    def __init__(self, string):
+        self.lines = [l for l in string.split('\n') if len(l) > 0]
+
+    def tokenize(self, s):
+        '''Tokenisation part of the SpecProcessor'''
+        # first, remove tail end, i.e., the body
+        index = 0
+        parentheses = 0
+        tail = ''
+        while index < len(s):
+            if s[index] == '(':
+                parentheses += 1
+            elif s[index] == ')':
+                parentheses -= 1
+            elif s[index] == '=' and parentheses == 0:
+                tail = s[(index + 1):]
+                s = s[:(index + 1)]
+                break
+            index += 1
+        if index == len(s):
+            s += '=' # add implicit termination if needed
+
+        singles = '=,()'
+        index = 0
+        results = []
+
+        def err(l):
+            log('Unexpected character while processing line:')
+            log('%s' % l)
+            log((' ' * index) + '^')
+        
+        while index < len(s):
+            c = s[index]
+            
+            if c in singles:
+                results.append(c)
+            elif c.isspace():
+                pass
+            elif c.isalnum():
+                start = index
+                while index < len(s) and s[index].isalnum():
+                    index += 1
+                results.append(s[start:index])
+                continue
+            else:
+                err(s)
+                return None
+            index += 1
+
+        return (TokenStream(results), tail)
+
+    def dobject_for(self, name, body):
+        '''Map display type to display object'''
+        if name == 'text':
+            return DText(body)
+        elif name == 'img':
+            return DImage(body)
+        elif name == 'line':
+            return DLine()
+        elif name == 'script':
+            return DScript(body)
+        return None
+
+    def add_dobjects(self, dbox):
+        '''Adds a finished object to the computed dbox'''
+        for l in self.line_results:
+            dbox.append(l)
+
+    def parse(self):
+        '''Returns True if parsing succeeded; prints error messages as appropriate'''
+        results = []
+        self.dline = None
+
+        try:
+            def result_append(dobj):
+                if type(dobj) is DLine:
+                    dline_finish()
+                    self.dline = dobj
+                else:
+                    if self.dline is None:
+                        results.append(dobj)
+                    else:
+                        self.dline.append(dobj)
+
+            def dline_finish():
+                if self.dline is not None:
+                    results.append(self.dline)
+                self.dline = None
+            
+            for l in self.lines:
+                def err(s):
+                    log('Error in line "%s":' % l)
+                    log('\t', s)
+                    raise ParseError(None)
+
+                if l.startswith(CONTROL_CHAR):
+                    # command
+                    tokenset = self.tokenize(l[1:])
+                    if tokenset is None:
+                        result_append(DText('<ERROR>', color='red'))
+                        continue
+                    (tokens, body) = tokenset
+
+                    tokens.set_err(err)
+                    dname = tokens.next()
+                    try:
+                        dobj = self.dobject_for(dname, body)
+                    except Exception, e:
+                        log(e.message)
+                        log(traceback.format_exc())
+                        dobj = DText('<ERROR>', color='red')
+
+                    if dname == 'endline':
+                        dobj.configure_end()
+                        dline_finish()
+                        continue
+
+                    if dobj == None:
+                        err('Unknown or unsupported display type "%s"' % dname)
+
+                    if tokens.peek() == '=':
+                        result_append(dobj)
+                        continue # no parameters
+                    oparen = tokens.next()
+                    if oparen != '(':
+                        err('Expected "(" or ":" after %s' % dname)
+                        
+                    term = ''
+                    while term != ')':
+                        (key, _) = tokens.concat_until('=', ',()')
+                        (value, term) = tokens.concat_until('),', '=()')
+                        if not dobj.configure(key, value):
+                            err('invalid specification: "%s:%s"' % (key, value))
+
+                    if not dobj.configure_end():
+                        err('incompatible specification')
+
+                    result_append(dobj)
+                else:
+                    result_append(DText(l.strip()))
+                    
+            dline_finish()
+        except ParseError, e:
+            return False
+        
+        self.line_results = results
+        return True
+
+
+################################################################################
+# IPC communication
+################################################################################
+
+# IPC messages
+MESSAGE_SHUTDOWN = 'SHUTDOWN'
+MESSAGE_FORCE_SHUTDOWN = 'FORCE-SHUTDOWN'
+MESSAGE_UPDATE = 'UPDATE'
+MESSAGE_END = 'END'
+
+class AwarePipe(object):
+    '''Named pipe support (and pid-based validation) for communication'''
+    
+    def __init__(self, filename = None, pid_filename = None):
+        if filename is None:
+            filename = Config.pipe_file_name
+        if pid_filename is None:
+            pid_filename = Config.pid_file_name
+        self.filename = filename
+        self.pid_filename = pid_filename
+
+    def exists(self):
+        '''Does the pipe exist?  Is the PID up to date?  Does it point to a python process?  Cleans up if not.'''
+        if not os.path.exists(self.filename) or not os.path.exists(self.pid_filename):
+            return False
+        claimed_pid = 0
+        with open(self.pid_filename) as f:
+            claimed_pid = int(f.read())
+        try:
+            proc_name = subprocess.check_output(['/bin/ps', '-p', '%d' % claimed_pid, '-o', 'comm=']).strip()
+        except subprocess.CalledProcessError:
+            self.cleanup()
+            return False
+        if proc_name != 'python':
+            self.cleanup()
+            return False
+        return True
+
+    def listener(self):
+        '''Creates an UpdateListener.  Stores pid for later validity checking'''
+        with open(self.pid_filename, 'w') as f:
+            f.write('%s' % os.getpid())
+        
+        os.mkfifo(self.filename)
+        return UpdateListener(self.filename)
+
+    def open_writer(self):
+        '''Opens pipe for writing.'''
+        return open(self.filename, 'w')
+
+    def cleanup(self):
+        '''Best-effort pipe and pid file cleanup.'''
+        try:
+            os.remove(self.pid_filename)
+        except OSError:
+            pass
+        try:        
+            os.remove(self.filename)
+        except OSError:
+            pass
+
+
+class UpdateListener(threading.Thread):
+    '''Background thread for listening and processing commands via named pipe'''
+
+    def __init__(self, fifo_name):
+        threading.Thread.__init__(self)
+        self.fifo_name = fifo_name
+        self.most_recent_update = time.time()
+        self.lines = []
+
+    def run(self):
+        '''Continuously polls for input/updates via named pipe.'''
+        buffer = ''
+        try:
+            while True:
+                f = open(self.fifo_name)
+                while not f.closed:
+                    update = f.read()
+                    buffer += update
+                    new_lines = buffer.split('\n')
+                    if len(new_lines) > 0:
+                        buffer = new_lines[-1]
+                        self.lines += new_lines[:len(new_lines) - 1]
+                        self.process_command()
+                    if update == '': # eof
+                        f.close()
+        finally:
+            os.remove(self.fifo_name)
+
+
+    def process_command(self):
+        '''Processes fully-read input (in self.lines).  Returns True iff a pipe reset is needed.'''
+        ret = False
+        while len(self.lines) > 0:
+            if self.lines[0] == '':
+                self.lines = self.lines[1:]
+                continue
+            if self.lines[0] == MESSAGE_SHUTDOWN or self.lines[0] == MESSAGE_FORCE_SHUTDOWN:
+                if ((time.time() > self.most_recent_update + Config.update_safety_delay)
+                    or self.lines[0] == MESSAGE_FORCE_SHUTDOWN):
+                    
+                    # This solution is brutal but effective
+                    AwarePipe().cleanup()
+                    os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
+                # otherwise ignore the shutdown request to avoid having the user miss something
+                self.lines = self.lines[1:]
+            elif self.lines[0] == MESSAGE_UPDATE:
+                self.most_recent_update = time.time()
+                i = 0
+                end = -1
+                while i + 1 < len(self.lines):
+                    i += 1
+                    if self.lines[i] == MESSAGE_END:
+                        end = i
+                        ret = True
+                        break;
+                if end == -1:
+                    # message not finished
+                    return False
+                updates = self.lines[1:end]
+                self.lines = self.lines[(i+1):]
+                update_spec = '\n'.join(u[1:] for u in updates) + '\n'
+                update_notifier(update_spec)
+            else:
+                log('listener: Garbage command "%s"' % self.lines[0])
+                self.lines = self.lines[1:]
+        return ret
+
+
+################################################################################
+# Main class
+################################################################################
+
+class Main(object):
+    '''Main class'''
+    
+    def __init__(self):
+        Config() # init config file
+        parser = argparse.ArgumentParser(description='Pop up a custom informative message without grabbing focus.',
+                                         # epilog doesn't make it easy to use formatting, and I'm too lazy to write a
+                                         # custom formatter class.
+                                         epilog='''
+                                         Messages can be plain-text or use special formatting.  To use special
+                                         formatting, start a line with `+', followed by formatting directions
+                                         (e.g., +img:path/to/image.png).  See the man page for details.
+                                         ''')
+        
+        parser.add_argument('text', metavar='T', type=str, nargs='*',
+                            help='Messages to display, one per line (see below), or - to read from stdin')
+        parser.add_argument('--foreground', dest='main', action='store_const',
+                            const=self.main, default=self.main_daemon,
+                            help='Run in foreground mode, forego daemonisation (for debugging)')
+        parser.add_argument('-s', '--stop', dest='action', action='store_const',
+                            const=self.stop, default=self.display,
+                            help='Stop displaying')
+        parser.add_argument('--force-stop', dest='action', action='store_const',
+                            const=self.force_stop, default=self.display,
+                            help='Stop displaying, overriding safety delay')
+        parser.add_argument('-v', '--version', dest='action', action='store_const',
+                            const=self.version, default=self.display,
+                            help='Display version')
+        parser.add_argument('-m', '--message', dest='action', action='store_const',
+                            const=self.display, default=self.display,
+                            help='Display message (default)')
+        self.parser = parser
+        self.pipe = AwarePipe()
+
+    def run(self):
+        '''Processes command line arguments and actions.'''
+        self.args = self.parser.parse_args()
+        self.args.action()
+
+    def version(self):
+        '''Toplevel command: Prints version and copyright information.'''
+        print('aware, version', VERSION)
+        print('Copyright (C) 2015 Christoph Reichenbach <creichen%sgmail.com>' % '@')
+        print('This program is provided WITHOUT WARRANTY, either expressed or implied, under the terms of the GNU GPL v2.')
+
+    def get_stdin(self, prefix=''):
+        '''read stdin, prefixing each line as specified'''
+        buffer = ''
+        for line in fileinput.input():
+            buffer += prefix + line + '\n'
+        return buffer
+
+    def message(self, prefix=''):
+        '''Get the display information to show, reading from stdin iff requested'''
+        text_fragments = self.args.text
+        if text_fragments == ['-']:
+            return self.get_stdin(prefix)
+        else:
+            newline = True
+            body = '\n'.join(prefix + s for s in text_fragments)
+            return body
+
+    def display(self):
+        '''Toplevel command: print out messages'''
+        if self.pipe.exists():
+            buf = self.message('!') # prepend '!' to each line as part of the transfer protocol to avoid confusion with messages
+            with self.pipe.open_writer() as f:
+                f.write('\n' + MESSAGE_UPDATE + '\n')
+                f.write(buf)
+                f.write('\n' + MESSAGE_END + '\n')
+        else:
+            retval = 1
+            try:
+                retval = self.args.main(self.message())
+            finally:
+                self.pipe.cleanup()
+            sys.exit(retval)
+
+    def stop(self):
+        '''Toplevel command: stop showing messages'''
+        if not self.pipe.exists():
+            return
+        else:
+            with self.pipe.open_writer() as f:
+                f.write(MESSAGE_SHUTDOWN + '\n')
+
+    def force_stop(self):
+        '''Toplevel command: stop showing messages forcefully'''
+        if not self.pipe.exists():
+            return
+        else:
+            with self.pipe.open_writer() as f:
+                f.write(MESSAGE_FORCE_SHUTDOWN + '\n')
+
+    def main_daemon(self, message):
+        '''Run main() in background'''
+        try:
+            pid = os.fork()
+            if pid > 0:
+                sys.exit(0)
+        except OSError, e:
+            sys.stderr.write("Failed to start daemon: %d (%s)\n" % (e.errno, e.strerror))
+            return 1
+        log_output = None
+        self.main(message)
+
+    def main(self, message):
+        '''Show window and wait for further updates via pipe'''
+        gobject.threads_init()  # magic to make threads work with Gtk+
+
+        # start pipe communication
+        dl = self.pipe.listener()
+        dl.start()
+
+        win = AwareWindow(DBox())
+        fg_color = parse_color(Config.bar_color)
+        bg_color = parse_color(Config.default_bg_color, 'black')
+        win.modify_fg(gtk.STATE_NORMAL, fg_color)
+        win.modify_bg(gtk.STATE_NORMAL, bg_color)
+
+        global notifier
+        notifier = win
+
+        if not update_notifier(message):
+            # failed to start up properly
+            self.pipe.cleanup()
+            os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
+
+        win.show_all()
+        gtk.main()
+                
+
+if __name__ == '__main__':
+    m = Main()
+    m.run()
+    sys.exit(0)
+
+# Makefile
+# github
