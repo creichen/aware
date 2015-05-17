@@ -360,13 +360,20 @@ class DContainer(DObject):
         self.elements = elements
 
     def update_element(self, index, element):
-        self.elements[index].stop()
-        self.elements[index] = element # and discard old element
-        
-    def register(self, index, element):
-        '''new element added at index'''
-        pass
+        if self.elements[index].id == element.id:
+            self.elements[index].stop()
+            self.elements[index] = element # and discard old element
+        else:
+            self.elements[index].append(element) # indirectly recurse into update_element handler for this dline
 
+    def register(self, index, dline):
+        # for contained dlines: register ids
+        for n in dline.contained_elements():
+            if n.id is not None:
+                print(type(self), ': registering id', n.id)
+                self.id_map[n.id] = index
+            self.register(index, n)
+            
     def append(self, element):
         if self.window is not None:
             element.set_window(self.window)
@@ -388,6 +395,7 @@ class DContainer(DObject):
 
     def contained_elements(self):
         return self.elements
+        return result
 
             
 class DScript(DContainer):
@@ -514,19 +522,6 @@ class DBox(DContainer):
     def __init__(self, elements=None):
         DContainer.__init__(self, elements)
 
-    def update_element(self, index, element):
-        if self.elements[index].id == element.id:
-            self.elements[index].stop()
-            self.elements[index] = element # and discard old element
-        else:
-            self.elements[index].append(element) # indirectly recurse into update_element handler for this dline
-
-    def register(self, index, dline):
-        # for contained dlines: register ids
-        for n in dline.contained_elements():
-            if n.id is not None:
-                self.id_map[n.id] = index
-            
     def get_size(self):
         width = 0
         height = 0
