@@ -838,7 +838,6 @@ class SpecProcessor(object):
                         dobj = DText('<ERROR>', color='red')
 
                     if dname == 'endline':
-                        dobj.configure_end()
                         dline_finish()
                         continue
 
