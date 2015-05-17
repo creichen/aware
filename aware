@@ -473,7 +473,7 @@ class DScript(DContainer):
                 dobj.id = myid
                 container.append(dobj)
                 global notifier
-                notifier.update()
+                gobject.idle_add(notifier.update)
             lock.release()
 
         # start in separate thread so we don't have to wait for script to finish
@@ -655,8 +655,10 @@ def update_notifier(message):
     try:
         sp = SpecProcessor(message)
         if sp.parse():
-            sp.add_dobjects(notifier.get_dobject())
-        notifier.update()
+            def update():
+                sp.add_dobjects(notifier.get_dobject())
+                notifier.update()
+            gobject.idle_add(update)
     except Exception, e:
         print(e.message, file=sys.stderr)
         log(traceback.format_exc())
