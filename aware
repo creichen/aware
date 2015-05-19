@@ -752,6 +752,9 @@ class SpecProcessor(object):
             log('Unexpected character while processing line:')
             log('%s' % l)
             log((' ' * index) + '^')
+
+        def islegal(p):
+            return p.isalnum() or p in '#_+-!@%*'
         
         while index < len(s):
             c = s[index]
@@ -760,9 +763,9 @@ class SpecProcessor(object):
                 results.append(c)
             elif c.isspace():
                 pass
-            elif c.isalnum():
+            elif islegal(c): 
                 start = index
-                while index < len(s) and s[index].isalnum():
+                while index < len(s) and islegal(s[index]):
                     index += 1
                 results.append(s[start:index])
                 continue
