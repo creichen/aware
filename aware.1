@@ -45,7 +45,7 @@ can be plain-text messages text or use special formatting.
 starting with \fI+\fR specially:
 
    +text=foo            Same as just "foo"
-   
+
    +img=~/x.png         Display image x.png (bounds size, see below)
 
    +script=date         Execute `date' and use the result as if it had been a display specification
@@ -60,7 +60,7 @@ The Idisplay types above, \fItext\fR, \fIimg\fR, \fIscript\fR,
 and \fIline\fR, permit further configuration:
 
    +text(colour=red)=...        Change font colour
-   +text(colour=fixed 12)=...   Change font style
+   +text(font=fixed 12)=..  .   Change font style (see FONTS, below)
 
    +img(maxwidth=100)=...       Limit image width.  Scale down proportionally if exceeded.
    +img(maxheight=100)=...      Limit image height.  Scale down proportionally if exceeded.
@@ -128,7 +128,7 @@ disables the "\-\-stop" command for this time interval.
 
 .TP
 .BR "font = 'Sans Serif 8'"
-Default text font.
+Default text font (see FONTS, below).
 
 .TP
 .BR "bar_color = gray'"
@@ -157,6 +157,19 @@ Default maximum image width (cf. \fImaxwidth\fR for +img).
 .TP
 .BR "max_height = 256"
 Default maximum image height (cf. \fImaxheight\fR for +img).
+
+.SH FONTS
+Fonts follow the syntax
+
+  font name [size]
+
+For instance,
+
+  Times New Roman 20
+
+or
+
+  Fixed
 
 .SH EXAMPLES
 Some example uses:

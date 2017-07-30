@@ -47,7 +47,7 @@ pygtk.require('2.0')
 # Basic information and utilities
 ################################################################################
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 CONFIG_FILE = os.path.expanduser('~/.aware')
 CONTROL_CHAR = '+'  # as in +text, +img, ...
 
@@ -86,11 +86,11 @@ class FakeSecHead(object):
 
     def readline(self):
         if self.header:
-            try: 
+            try:
                 return self.header
-            finally: 
+            finally:
                 self.header = None
-        else: 
+        else:
             return self.f.readline()
 
 
@@ -129,7 +129,7 @@ class Config(object):
             except Exception, e:
                 log(e.message)
                 log('Expected %s for option %s but got "%s"' % (type(ov).__name__, k, v))
-    
+
     pipe_file_name = os.path.expanduser('~/.aware-pipe')
     pid_file_name = os.path.expanduser('~/.aware-pid')
     update_safety_delay = 1.5   # amount of seconds after an update during which we reject SHUTDOWN message
@@ -144,12 +144,48 @@ class Config(object):
 
 
 ################################################################################
+# Fonts
+################################################################################
+
+class Font(object):
+    DEFAULT_SIZE = 8.0
+
+    def __init__(self, name, size=None):
+        self.name = name
+        self.size = size
+        if size is None:
+            self.parse(name)
+
+    def set(self, cr):
+        cr.select_font_face(self.name, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(self.size)
+
+    def parse(self, string):
+        if len(string) > 2 and string[0] == "'" and string[-1] == "'":
+            string = string[1:-1]
+        sections = string.split()
+        size = Font.DEFAULT_SIZE
+        if len(sections):
+            try:
+                size = float(sections[-1])
+                sections = sections
+                sections.pop()
+            except ValueError:
+                pass
+        self.name = ' '.join(sections)
+        self.size = size
+
+    def full_name(self):
+        return self.name + ' ' + str(self.size)
+
+
+################################################################################
 # Display objects for visualising strings, images etc.
 ################################################################################
 
 class DObject(object):
     '''Represents an entity-to-visualise.'''
-    
+
     def __init__(self):
         self.id = None # unique ID, permits overriding
         self.window = None
@@ -199,11 +235,11 @@ class DObject(object):
     def configure_end(self):
         '''Final sanity checks after all config is set'''
         return True
-    
+
 
 class DImage(DObject):
     '''A graphical image file (png, jpeg, ...) to display (+img)'''
-    
+
     def __init__(self, image, width=None, height=None):
         DObject.__init__(self)
         image = image.strip()
@@ -233,15 +269,15 @@ class DImage(DObject):
                 return 1
             else:
                 return int(x)
-        
+
         self.width = fix(self.width, self.source_pixbuf.get_width())
         self.height = fix(self.height, self.source_pixbuf.get_height())
-        
+
         if self.pixbuf is not None and self.pixbuf.get_width() == self.width and self.pixbuf.get_height() == self.height:
             return
 
         self.pixbuf = self.source_pixbuf.scale_simple(self.width, self.height, cairo.FILTER_BEST)
-        
+
     def get_size(self):
         return (self.width, self.height, 0)
 
@@ -281,12 +317,12 @@ class DImage(DObject):
 
     def configure_end(self):
         downscale = None
-        
+
         if self.force_width is not None:
             self.width = self.force_width
         elif self.width > self.max_width:
             downscale = float(self.max_width) / float(self.width)
-            
+
         if self.force_height is not None:
             self.height = self.force_height
         elif self.height > self.max_height:
@@ -295,7 +331,7 @@ class DImage(DObject):
                 downscale = d
             else:
                 downscale = min(d, downscale)
-                
+
         if downscale is not None:
             self.width = int(self.source_pixbuf.get_width() * downscale)
             self.height = int(self.source_pixbuf.get_height() * downscale)
@@ -303,21 +339,21 @@ class DImage(DObject):
         self.change_size()
         return True
 
-        
+
 class DText(DObject):
     '''Character string to display (+text)'''
-    
+
     def __init__(self, text, color=None):
         DObject.__init__(self)
         self.text = text
-        self.font = Config.font
+        self.font = Font(Config.font)
         if color is None:
             color = Config.default_fg_color
         self.color = parse_color(color)
 
     def set_window(self, window):
         self.layout = window.create_pango_layout(self.text)
-        self.layout.set_font_description(pango.FontDescription(self.font))
+        self.layout.set_font_description(pango.FontDescription(self.font.full_name()))
 
     def get_size(self):
         bo = int(self.layout.get_iter().get_baseline() / pango.SCALE)
@@ -327,7 +363,7 @@ class DText(DObject):
 
     def configure(self, key, value):
         if key == 'font':
-            self.font = value
+            self.font = Font(value)
         elif key in ['color', 'colour']:
             self.color = parse_color(value)
             if self.color is None:
@@ -341,6 +377,7 @@ class DText(DObject):
         return True
 
     def draw(self, cr, x, y):
+        self.font.set(cr)
         cr.set_source_color(self.color)
         cr.move_to(x, y - self.get_baseline())
         cr.show_layout(self.layout)
@@ -351,7 +388,7 @@ class DText(DObject):
 
 class DContainer(DObject):
     '''Abstract container class'''
-    
+
     def __init__(self, elements=None):
         DObject.__init__(self)
         if elements is None:
@@ -373,7 +410,7 @@ class DContainer(DObject):
                 print(type(self), ': registering id', n.id)
                 self.id_map[n.id] = index
             self.register(index, n)
-            
+
     def append(self, element):
         if self.window is not None:
             element.set_window(self.window)
@@ -397,10 +434,10 @@ class DContainer(DObject):
         return self.elements
         return result
 
-            
+
 class DScript(DContainer):
     '''Script container (+script).  Contains a single element that may update itself.'''
-    
+
     implicit_ids = 0	# used to assign unique IDs to contained scripts
 
     def __init__(self, script):
@@ -412,7 +449,7 @@ class DScript(DContainer):
         self.timer = None # for repeat updates
         self.thread_lock = threading.Lock()
         self.thread_cancel = [False] # for cancelling thread execution
-        
+
         dobj = DText('') # start out with empty text, fill in later with script result
         dobj.id = self.implicit_id
         self.append(dobj)
@@ -456,7 +493,7 @@ class DScript(DContainer):
             if cancel[0]:
                 lock.release()
                 return
-            
+
             container.start_repeat()
             dobj = None
             try:
@@ -481,7 +518,7 @@ class DScript(DContainer):
         thread = threading.Thread(target = do_update, args = [self, self.script, self.implicit_id, self.start_repeat, self.thread_lock, self.thread_cancel])
         thread.start()
         self.thread_lock.release()
-        
+
     def configure_end(self):
         if self.id is None:
             self.id = self.implicit_id
@@ -506,7 +543,7 @@ class DLine(DContainer):
             result[1] = max(result[1], size[1])
             result[2] = max(result[2], size[2])
         return tuple(result)
-    
+
     def draw(self, cr, x, y):
         for e in self.elements:
             (width, e_baseline, _) = e.get_size()
@@ -529,7 +566,7 @@ class DBox(DContainer):
             width = max(width, l.get_width())
             height += Config.line_separator_width + l.get_height()
         return (width, 0, height)
-    
+
     def draw(self, cr, x, y):
         for l in self.elements:
             l.draw_to(cr, x, y)
@@ -606,7 +643,7 @@ class AwareWindow(gtk.Window):
 
         self.style.set_background(self.window, gtk.STATE_NORMAL)
         self.update()
-        
+
 
     def do_unrealize(self):
         '''GTK widget window unrealisation'''
@@ -619,9 +656,9 @@ class AwareWindow(gtk.Window):
 
     def do_expose_event(self, event):
         '''GTK notification that we should redraw'''
-        
+
         x, y, w, h = self.allocation
-        
+
         # clear background
         cr = self.window.cairo_create()
         cr.save()
@@ -644,7 +681,7 @@ class AwareWindow(gtk.Window):
         # draw dobject
         self.dobject.draw_to(cr, self.pad_left, self.pad_top)
 
-        
+
 gobject.type_register(AwareWindow)
 
 notifier = None	# global AwareWindow
@@ -717,11 +754,11 @@ class TokenStream(object):
                     result = s
                 else:
                     result = result + ' ' + s
-                            
-        
+
+
 class SpecProcessor(object):
     '''Parses specification input and produces an output DObject'''
-    
+
     def __init__(self, string):
         self.lines = [l for l in string.split('\n') if len(l) > 0]
 
@@ -755,10 +792,10 @@ class SpecProcessor(object):
 
         def islegal(p):
             return p.isalnum() or p in '#_+-!@%*'
-        
+
         while index < len(s):
             c = s[index]
-            
+
             if c in singles:
                 results.append(c)
             elif c.isspace():
@@ -813,7 +850,7 @@ class SpecProcessor(object):
                 if self.dline is not None:
                     results.append(self.dline)
                 self.dline = None
-            
+
             for l in self.lines:
                 def err(s):
                     log('Error in line "%s":' % l)
@@ -850,7 +887,7 @@ class SpecProcessor(object):
                     oparen = tokens.next()
                     if oparen != '(':
                         err('Expected "(" or ":" after %s' % dname)
-                        
+
                     term = ''
                     while term != ')':
                         (key, _) = tokens.concat_until('=', ',()')
@@ -864,11 +901,11 @@ class SpecProcessor(object):
                     result_append(dobj)
                 else:
                     result_append(DText(l.strip()))
-                    
+
             dline_finish()
         except ParseError, e:
             return False
-        
+
         self.line_results = results
         return True
 
@@ -885,7 +922,7 @@ MESSAGE_END = 'END'
 
 class AwarePipe(object):
     '''Named pipe support (and pid-based validation) for communication'''
-    
+
     def __init__(self, filename = None, pid_filename = None):
         if filename is None:
             filename = Config.pipe_file_name
@@ -915,7 +952,7 @@ class AwarePipe(object):
         '''Creates an UpdateListener.  Stores pid for later validity checking'''
         with open(self.pid_filename, 'w') as f:
             f.write('%s' % os.getpid())
-        
+
         os.mkfifo(self.filename)
         return UpdateListener(self.filename)
 
@@ -929,7 +966,7 @@ class AwarePipe(object):
             os.remove(self.pid_filename)
         except OSError:
             pass
-        try:        
+        try:
             os.remove(self.filename)
         except OSError:
             pass
@@ -974,7 +1011,7 @@ class UpdateListener(threading.Thread):
             if self.lines[0] == MESSAGE_SHUTDOWN or self.lines[0] == MESSAGE_FORCE_SHUTDOWN:
                 if ((time.time() > self.most_recent_update + Config.update_safety_delay)
                     or self.lines[0] == MESSAGE_FORCE_SHUTDOWN):
-                    
+
                     # This solution is brutal but effective
                     AwarePipe().cleanup()
                     os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
@@ -1020,7 +1057,7 @@ class Main(object):
                                          formatting, start a line with `+', followed by formatting directions
                                          (e.g., +img:path/to/image.png).  See the man page for details.
                                          ''')
-        
+
         parser.add_argument('text', metavar='T', type=str, nargs='*',
                             help='Messages to display, one per line (see below), or - to read from stdin')
         parser.add_argument('--foreground', dest='main', action='store_const',
@@ -1137,7 +1174,7 @@ class Main(object):
 
         win.show_all()
         gtk.main()
-                
+
 
 if __name__ == '__main__':
     m = Main()
