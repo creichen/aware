@@ -26,6 +26,7 @@ from __future__ import print_function
 import ConfigParser
 import argparse
 import cairo
+import fcntl
 import fileinput
 import gobject
 import gtk
@@ -42,14 +43,24 @@ import traceback
 
 pygtk.require('2.0')
 
+def create_exclusive(filename):
+    try:
+        fd = os.open(filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError as e:
+        if e.errno == errno.EEXIST:
+            return None
+        else:
+            raise
+    return os.fdopen(fd, 'w')
 
 ################################################################################
 # Basic information and utilities
 ################################################################################
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 CONFIG_FILE = os.path.expanduser('~/.aware')
-CONTROL_CHAR = '+'  # as in +text, +img, ...
+CONTROL_CHAR = '+'	# as in +text, +img, ...
+ALLOCATION_TRIES = 10	# number of times we back off on trying to server lock before aborting
 
 # Primitive logging interface
 # When running in daemon mode, we currently discard all output.
@@ -800,7 +811,7 @@ class SpecProcessor(object):
                 results.append(c)
             elif c.isspace():
                 pass
-            elif islegal(c): 
+            elif islegal(c):
                 start = index
                 while index < len(s) and islegal(s[index]):
                     index += 1
@@ -920,6 +931,10 @@ MESSAGE_FORCE_SHUTDOWN = 'FORCE-SHUTDOWN'
 MESSAGE_UPDATE = 'UPDATE'
 MESSAGE_END = 'END'
 
+class ListenerAlreadyExistsException(Exception):
+    def __init__(self):
+        pass
+
 class AwarePipe(object):
     '''Named pipe support (and pid-based validation) for communication'''
 
@@ -930,6 +945,7 @@ class AwarePipe(object):
             pid_filename = Config.pid_file_name
         self.filename = filename
         self.pid_filename = pid_filename
+        self.allocation_tries = ALLOCATION_TRIES
 
     def exists(self):
         '''Does the pipe exist?  Is the PID up to date?  Does it point to a python process?  Cleans up if not.'''
@@ -949,9 +965,20 @@ class AwarePipe(object):
         return True
 
     def listener(self):
-        '''Creates an UpdateListener.  Stores pid for later validity checking'''
-        with open(self.pid_filename, 'w') as f:
-            f.write('%s' % os.getpid())
+        '''Creates an UpdateListener, or raises ListenerAlreadyExistsException if we couldn't get an exclusive lock.
+        Stores pid for later validity checking, on success.'''
+        if self.allocation_tries == 0:
+            sys.stderr.write("Failed to acquire lock on %s\n" % (self.pid_filename))
+            sys.exit(1)
+
+        self.allocation_tries -= 1
+
+        pidfile = create_exclusive(self.pid_filename)
+        if pidfile is None:
+            raise ListenerAlreadyExistsException()
+
+        pidfile.write('%s' % os.getpid())
+        pidfile.close()
 
         os.mkfifo(self.filename)
         return UpdateListener(self.filename)
@@ -1046,7 +1073,7 @@ class UpdateListener(threading.Thread):
 
 class Main(object):
     '''Main class'''
-    
+
     def __init__(self):
         Config() # init config file
         parser = argparse.ArgumentParser(description='Pop up a custom informative message without grabbing focus.',
@@ -1108,19 +1135,25 @@ class Main(object):
 
     def display(self):
         '''Toplevel command: print out messages'''
-        if self.pipe.exists():
-            buf = self.message('!') # prepend '!' to each line as part of the transfer protocol to avoid confusion with messages
-            with self.pipe.open_writer() as f:
-                f.write('\n' + MESSAGE_UPDATE + '\n')
-                f.write(buf)
-                f.write('\n' + MESSAGE_END + '\n')
-        else:
-            retval = 1
+        retry = True
+
+        while retry:
+            retry = False
             try:
-                retval = self.args.main(self.message())
-            finally:
-                self.pipe.cleanup()
-            sys.exit(retval)
+                if self.pipe.exists():
+                    buf = self.message('!') # prepend '!' to each line as part of the transfer protocol to avoid confusion with messages
+                    with self.pipe.open_writer() as f:
+                        f.write('\n' + MESSAGE_UPDATE + '\n')
+                        f.write(buf)
+                        f.write('\n' + MESSAGE_END + '\n')
+                else:
+                    retval = 1
+
+                    retval = self.args.main(self.message())
+                    self.pipe.cleanup()
+                    sys.exit(retval)
+            except ListenerAlreadyExistsException:
+                retry = True
 
     def stop(self):
         '''Toplevel command: stop showing messages'''
