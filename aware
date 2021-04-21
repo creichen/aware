@@ -78,6 +78,34 @@ def parse_color(colname, default = 'white'):
     colname.strip()
     if len(colname) > 2 and colname[0] == colname[-1] and colname[0] in '\'\"':
         colname = colname[1:len(colname) - 1]
+    if colname.startswith('#') and len(colname) <= 9:
+        def digit(d):
+            try:
+                return int(d, 16)
+            except ValueError:
+                None
+
+        def cv(n):
+            if len(n) == 2:
+                maxv = 255.0
+                v = (n[0] << 1) | n[1]
+            else:
+                maxv = 15.0
+                v = n[0]
+            return v/max
+
+        def cvec(v, steplen):
+            result = []
+            while len(v):
+                current = v[:steplen]
+                v = v[steplen:]
+                result.append(cv(v))
+            return result
+
+        cn = [digit(d) for d in colname[1:]]
+        if None not in cn and len(cv) in [3, 4, 6, 8]:
+            # all valid digits
+            return Gdk.RGBA(*(cvec(cn), 1 if len(cv) <= 4 else 2))
     try:
         return Gdk.RGBA.from_color(Gdk.color_parse(colname))
     except Exception:
