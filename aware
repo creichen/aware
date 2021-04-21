@@ -36,15 +36,6 @@ import sys
 import threading
 import time
 import traceback
-import gi
-gi.require_version('Gtk', '3.0')
-gi.require_version('PangoCairo', '1.0')
-from gi.repository import GLib, Gtk, Gdk, GObject, Pango, PangoCairo, GdkPixbuf
-
-# workaround for broken Gdk
-GDK_WINDOW_TYPE_TOPLEVEL = Gdk.WindowType.TOPLEVEL
-if (0 + GDK_WINDOW_TYPE_TOPLEVEL) == 0:
-    GDK_WINDOW_TYPE_TOPLEVEL = 1
 
 def create_exclusive(filename):
     try:
@@ -78,7 +69,7 @@ def parse_color(colname, default = 'white'):
     colname.strip()
     if len(colname) > 2 and colname[0] == colname[-1] and colname[0] in '\'\"':
         colname = colname[1:len(colname) - 1]
-    if colname.startswith('#') and len(colname) <= 9:
+    if len(colname) <= 9:
         def digit(d):
             try:
                 return int(d, 16)
@@ -86,31 +77,35 @@ def parse_color(colname, default = 'white'):
                 None
 
         def cv(n):
+
             if len(n) == 2:
                 maxv = 255.0
-                v = (n[0] << 1) | n[1]
+                v = (n[0] << 4) | n[1]
             else:
                 maxv = 15.0
                 v = n[0]
-            return v/max
+            return v / maxv
 
         def cvec(v, steplen):
             result = []
             while len(v):
                 current = v[:steplen]
                 v = v[steplen:]
-                result.append(cv(v))
+                result.append(cv(current))
+            if len(result) == 3:
+                result.append(1.0)
             return result
 
-        cn = [digit(d) for d in colname[1:]]
-        if None not in cn and len(cv) in [3, 4, 6, 8]:
+        colname_stripped = colname[1:] if colname.startswith('#') else colname
+        cn = [digit(d) for d in colname_stripped]
+        if None not in cn and len(cn) in [3, 4, 6, 8]:
             # all valid digits
-            return Gdk.RGBA(*(cvec(cn), 1 if len(cv) <= 4 else 2))
+            return GUI.Gdk.RGBA(*(cvec(cn, 1 if len(cn) <= 4 else 2)))
     try:
-        return Gdk.RGBA.from_color(Gdk.color_parse(colname))
+        return GUI.Gdk.RGBA.from_color(GUI.Gdk.color_parse(colname))
     except Exception:
         log('Unknown color "%s"' % colname)
-        return Gdk.RGBA.from_color(Gdk.color_parse(default))
+        return GUI.Gdk.RGBA.from_color(GUI.Gdk.color_parse(default))
 
 
 ################################################################################
@@ -271,7 +266,7 @@ class DImage(DObject):
                 self.source_pixbuf = cairo.ImageSurface.create_from_png(os.path.expanduser(image))
             else:
                 raise('GTK/Cairo dropped support for non-png graphics.  Cannot load "%s".' % image)
-            # GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image)) # 
+            # GUI.GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image)) # 
         except Exception as e:
             log(e.message)
             log('Failed to load image "%s"' % image)
@@ -390,12 +385,12 @@ class DText(DObject):
 
     def set_window(self, window):
         self.layout = window.create_pango_layout(self.text)
-        self.layout.set_font_description(Pango.FontDescription(self.font.full_name()))
+        self.layout.set_font_description(GUI.Pango.FontDescription(self.font.full_name()))
 
     def get_size(self):
-        bo = int(self.layout.get_iter().get_baseline() / Pango.SCALE)
-        width = int(self.layout.get_size()[0] / Pango.SCALE)
-        height = int(self.layout.get_size()[1] / Pango.SCALE)
+        bo = int(self.layout.get_iter().get_baseline() / GUI.Pango.SCALE)
+        width = int(self.layout.get_size()[0] / GUI.Pango.SCALE)
+        height = int(self.layout.get_size()[1] / GUI.Pango.SCALE)
         return (width, bo, height - bo)
 
     def configure(self, key, value):
@@ -417,7 +412,7 @@ class DText(DObject):
         self.font.set(cr)
         cr.set_source_rgba(*self.color)
         cr.move_to(x, y - self.get_baseline())
-        PangoCairo.show_layout(cr, self.layout)
+        GUI.PangoCairo.show_layout(cr, self.layout)
 
     def __str__(self):
         return 'DText(%s)' % self.text
@@ -546,8 +541,7 @@ class DScript(DContainer):
             if dobj is not None:
                 dobj.id = myid
                 container.append(dobj)
-                global notifier
-                GLib.idle_add(notifier.update)
+                GUI.refresh_on_idle()
             lock.release()
 
         # start in separate thread so we don't have to wait for script to finish
@@ -614,146 +608,183 @@ class DBox(DContainer):
 
 
 ################################################################################
-# Our GTK widget
+# Our GTK widget, wrapped into lazily initialised graphics code
 ################################################################################
 
-class AwareWindow(Gtk.Window):
-    __gtype_name__ = 'AwareWindow'
-    '''Notification window'''
+class GUI:
+    notifier = None	# global AwareWindow
 
-    def __init__(self, dobject):
-        '''Initialise window with dobject to display'''
-        #Gtk.Widget.__init__(self)
-        Gtk.Window.__init__(self, type=Gtk.WindowType.TOPLEVEL)
-        self.set_resizable(False)
-        self.set_keep_above(True)
-        self.set_accept_focus(False)
-        # The following seems to look fine with text:
-        self.pad_top = 0	# number of pixels to pad
-        self.pad_bottom = 2
-        self.pad_left = 5
-        self.pad_right = 2
+    GLib = None
+    Gtk = None
+    Gdk = None
+    Pango = None
+    PangoCairo = None
 
-        self.window = None
-        self.root_window = Gdk.get_default_root_window()
-        self.root_size = (self.root_window.get_width(), self.root_window.get_height())
+    @staticmethod
+    def init_graphics():
+        # We initialise libraries on demand, so that we can run aware without X11
+        # to notify an X11 'aware' for the same user
+        if GUI.GLib is not None:
+            return
 
-        self.fg_color = parse_color(Config.bar_color)
-        self.bg_color = parse_color(Config.default_bg_color)
-        self.set_dobject(dobject, redraw=False)
+        import gi
+        gi.require_version('Gtk', '3.0')
+        gi.require_version('PangoCairo', '1.0')
+        from gi.repository import GLib, Gtk, Gdk, Pango, PangoCairo, GdkPixbuf
+        GUI.GLib = GLib
+        GUI.Gtk = Gtk
+        GUI.Gdk = Gdk
+        GUI.Pango = Pango
+        GUI.PangoCairo = PangoCairo
+        GUI.GdkPixbuf = GdkPixbuf
 
-        self.canvas = Gtk.DrawingArea()
-        self.canvas.connect("draw", self.draw_canvas)
-        self.add(self.canvas)
-        self.update(recompute_dimensions=False)
+    @staticmethod
+    def refresh_on_idle():
+        GUI.init_graphics()
+        GUI.GLib.idle_add(GUI.notifier.update)
 
-    def get_dobject(self):
-        return self.dobject
+    @staticmethod
+    def make_window():
+        GUI.init_graphics()
 
-    def update(self, recompute_dimensions=True, redraw=True):
-        if recompute_dimensions:
-            self.update_dimensions()
-        if redraw:
-            self.queue_draw()
+        class AwareWindow(GUI.Gtk.Window):
+            __gtype_name__ = 'AwareWindow'
+            '''Notification window'''
 
-    def set_dobject(self, dobject, redraw=True):
-        self.dobject = dobject
-        self.update(redraw=redraw)
+            def __init__(self, dobject):
+                '''Initialise window with dobject to display'''
+                #GUI.Gtk.Widget.__init__(self)
+                GUI.Gtk.Window.__init__(self, type=GUI.Gtk.WindowType.TOPLEVEL)
+                self.set_resizable(False)
+                self.set_keep_above(True)
+                self.set_accept_focus(False)
+                # The following seems to look fine with text:
+                self.pad_top = 0	# number of pixels to pad
+                self.pad_bottom = 2
+                self.pad_left = 5
+                self.pad_right = 2
 
-    def get_pad_width(self):
-        '''Total horizontal padding'''
-        return self.pad_left + self.pad_right
+                self.window = None
+                self.root_window = GUI.Gdk.get_default_root_window()
+                self.root_size = (self.root_window.get_width(), self.root_window.get_height())
 
-    def get_pad_height(self):
-        '''Total vertical padding'''
-        return self.pad_top + self.pad_bottom
+                self.fg_color = parse_color(Config.bar_color)
+                self.bg_color = parse_color(Config.default_bg_color)
+                self.set_dobject(dobject, redraw=False)
 
-    def update_dimensions(self):
-        '''Recompute size and trigger redraw'''
-        if self.dobject is not None:
-            self.dobject.set_window(self)
-            self.width = self.dobject.get_width() + self.get_pad_width()
-            self.height = self.dobject.get_height() + self.get_pad_height()
-            self.resize(self.width, self.height)
-            if self.window is not None:
-                self.window.move_resize(self.root_size[0] - self.width, 0,
-                                        self.width, self.height)
-            self.queue_draw()
+                self.canvas = GUI.Gtk.DrawingArea()
+                self.canvas.connect("draw", self.draw_canvas)
+                self.add(self.canvas)
+                self.update(recompute_dimensions=False)
 
-    def do_realize(self):
-        root = self.root_window
-        allocation = self.get_allocation()
-        attr = Gdk.WindowAttr()
-        attr.window_type = Gdk.WindowType.TOPLEVEL
-        attr.x = self.root_size[0] - self.width
-        attr.y = 0
-        attr.width = self.width
-        attr.height = self.height
-        attr.visual = self.get_visual()
-        attr.event_mask = self.get_events() | Gdk.EventMask.EXPOSURE_MASK
-        WAT = Gdk.WindowAttributesType
-        mask = WAT.X | WAT.Y | WAT.VISUAL
-        window = Gdk.Window(root, attr, mask);
-        window.set_keep_above(True)
-        window.set_override_redirect(True)
-        window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
-        self.window = window
-        self.set_window(window)
-        self.register_window(window)
-        self.set_realized(True)
+            def get_dobject(self):
+                return self.dobject
 
-    def __do_unrealize(self):
-        '''GTK widget window unrealisation'''
-        # I doubt that this ever gets called for this widget
-        self.window.set_user_data(None)
+            def update(self, recompute_dimensions=True, redraw=True):
+                if recompute_dimensions:
+                    self.update_dimensions()
+                if redraw:
+                    self.queue_draw()
 
-    def draw_canvas(self, area, cr):
-        '''GTK notification that we should redraw'''
+            def set_dobject(self, dobject, redraw=True):
+                self.dobject = dobject
+                self.update(redraw=redraw)
 
-        rect = self.get_allocation()
-        x = rect.x
-        y = rect.y
-        w = rect.width
-        h = rect.height
+            def get_pad_width(self):
+                '''Total horizontal padding'''
+                return self.pad_left + self.pad_right
 
-        # clear background
-        cr.save()
-        cr.rectangle(0, 0, self.width, self.height)
-        cr.set_operator(cairo.OPERATOR_SOURCE)
-        cr.set_source_rgba(*self.bg_color)#.red, self.fg_color.green, self.fg_color.blue)
-        cr.fill()
-        cr.restore()
+            def get_pad_height(self):
+                '''Total vertical padding'''
+                return self.pad_top + self.pad_bottom
 
-        # draw frame
-        cr.save()
-        cr.set_source_rgba(*self.fg_color)
-        cr.rectangle(2, -2,
-                     self.width, self.height)
-        cr.set_line_width(1.0)
-        cr.set_line_join(cairo.LINE_JOIN_ROUND)
-        cr.stroke()
-        cr.restore()
+            def update_dimensions(self):
+                '''Recompute size and trigger redraw'''
+                if self.dobject is not None:
+                    self.dobject.set_window(self)
+                    self.width = self.dobject.get_width() + self.get_pad_width()
+                    self.height = self.dobject.get_height() + self.get_pad_height()
+                    self.resize(self.width, self.height)
+                    if self.window is not None:
+                        self.window.move_resize(self.root_size[0] - self.width, 0,
+                                                self.width, self.height)
+                    self.queue_draw()
 
-        # draw dobject
-        self.dobject.draw_to(cr, self.pad_left, self.pad_top)
+            def do_realize(self):
+                root = self.root_window
+                allocation = self.get_allocation()
+                attr = GUI.Gdk.WindowAttr()
+                attr.window_type = GUI.Gdk.WindowType.TOPLEVEL
+                attr.x = self.root_size[0] - self.width
+                attr.y = 0
+                attr.width = self.width
+                attr.height = self.height
+                attr.visual = self.get_visual()
+                attr.event_mask = self.get_events() | GUI.Gdk.EventMask.EXPOSURE_MASK
+                WAT = GUI.Gdk.WindowAttributesType
+                mask = WAT.X | WAT.Y | WAT.VISUAL
+                window = GUI.Gdk.Window(root, attr, mask);
+                window.set_keep_above(True)
+                window.set_override_redirect(True)
+                window.set_type_hint(GUI.Gdk.WindowTypeHint.NOTIFICATION)
+                self.window = window
+                self.set_window(window)
+                self.register_window(window)
+                self.set_realized(True)
 
-notifier = None	# global AwareWindow
+            def __do_unrealize(self):
+                '''GTK widget window unrealisation'''
+                # I doubt that this ever gets called for this widget
+                self.window.set_user_data(None)
 
+            def draw_canvas(self, area, cr):
+                '''GTK notification that we should redraw'''
 
-def update_notifier(message):
-    '''Parse message and append it to the notifier if set'''
-    try:
-        sp = SpecProcessor(message)
-        if sp.parse():
-            def update():
-                sp.add_dobjects(notifier.get_dobject())
-                notifier.update()
-            GLib.idle_add(update)
-    except Exception as e:
-        print(e.message, file=sys.stderr)
-        log(traceback.format_exc())
-        return False
-    return True
+                rect = self.get_allocation()
+                x = rect.x
+                y = rect.y
+                w = rect.width
+                h = rect.height
+
+                # clear background
+                cr.save()
+                cr.rectangle(0, 0, self.width, self.height)
+                cr.set_operator(cairo.OPERATOR_SOURCE)
+                cr.set_source_rgba(*self.bg_color)#.red, self.fg_color.green, self.fg_color.blue)
+                cr.fill()
+                cr.restore()
+
+                # draw frame
+                cr.save()
+                cr.set_source_rgba(*self.fg_color)
+                cr.rectangle(2, -2,
+                             self.width, self.height)
+                cr.set_line_width(1.0)
+                cr.set_line_join(cairo.LINE_JOIN_ROUND)
+                cr.stroke()
+                cr.restore()
+
+                # draw dobject
+                self.dobject.draw_to(cr, self.pad_left, self.pad_top)
+        GUI.notifier = AwareWindow(DBox())
+        return GUI.notifier
+
+    @staticmethod
+    def update_notifier(message):
+        '''Parse message and append it to the notifier if set'''
+        try:
+            sp = SpecProcessor(message)
+            if sp.parse():
+                def update():
+                    sp.add_dobjects(GUI.notifier.get_dobject())
+                    GUI.notifier.update()
+                GUI.GLib.idle_add(update)
+        except Exception as e:
+            raise e
+            print(str(e), file=sys.stderr)
+            log(traceback.format_exc())
+            return False
+        return True
 
 
 ################################################################################
@@ -1146,7 +1177,7 @@ class UpdateListener(threading.Thread):
                 updates = self.lines[1:end]
                 self.lines = self.lines[(i+1):]
                 update_spec = '\n'.join(u[1:] for u in updates) + '\n'
-                update_notifier(update_spec)
+                GUI.update_notifier(update_spec)
             else:
                 log('listener: Garbage command "%s"' % self.lines[0])
                 self.lines = self.lines[1:]
@@ -1227,14 +1258,12 @@ class Main(object):
             retry = False
             try:
                 if self.pipe.exists():
-                    print('pipe ready, using')
                     buf = self.message('!') # prepend '!' to each line as part of the transfer protocol to avoid confusion with messages
                     with self.pipe.open_writer() as f:
                         f.write('\n' + MESSAGE_UPDATE + '\n')
                         f.write(buf)
                         f.write('\n' + MESSAGE_END + '\n')
                 else:
-                    print('pipe failed')
                     retval = 1
                     retval = self.args.main(self.message())
                     self.pipe.cleanup()
@@ -1273,25 +1302,21 @@ class Main(object):
 
     def main(self, message):
         '''Show window and wait for further updates via pipe'''
-        print('trying myself')
 
         # start pipe communication
         dl = self.pipe.listener()
         dl.start()
 
-        win = AwareWindow(DBox())
+        win = GUI.make_window()
 
-        global notifier
-        notifier = win
-
-        if not update_notifier(message):
+        if not GUI.update_notifier(message):
             # failed to start up properly
-            print('well that escalated quickly')
+            dl.stop()
             self.pipe.cleanup()
             os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
 
         win.show_all()
-        Gtk.main()
+        GUI.Gtk.main()
 
 
 if __name__ == '__main__':
