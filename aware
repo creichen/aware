@@ -37,8 +37,9 @@ import threading
 import time
 import traceback
 import gi
-gi.require_version('Gtk', '2.0')
-from gi.repository import GLib, Gtk, Gdk, GObject, Pango
+gi.require_version('Gtk', '3.0')
+gi.require_version('PangoCairo', '1.0')
+from gi.repository import GLib, Gtk, Gdk, GObject, Pango, PangoCairo
 
 # workaround for broken Gdk
 GDK_WINDOW_TYPE_TOPLEVEL = Gdk.WindowType.TOPLEVEL
@@ -80,32 +81,15 @@ def parse_color(colname, default = 'white'):
     if len(colname) > 2 and colname[0] == colname[-1] and colname[0] in '\'\"':
         colname = colname[1:len(colname) - 1]
     try:
-        return Gdk.color_parse(colname)
+        return Gdk.RGBA.from_color(Gdk.color_parse(colname))
     except Exception:
         log('Unknown color "%s"' % colname)
-        return Gdk.color_parse(default)
+        return Gdk.RGBA.from_color(Gdk.color_parse(default))
 
 
 ################################################################################
 # Confiugration
 ################################################################################
-
-class FakeSecHead(object):
-    '''Helper class for parsing config data.'''
-    # based on on a solution by Alex Martelli, http://stackoverflow.com/questions/2819696/parsing-properties-file-in-python/2819788#2819788
-    def __init__(self, f, section):
-        self.f = f
-        self.header = '[' + section + ']\n'
-
-    def readline(self):
-        if self.header:
-            try:
-                return self.header
-            finally:
-                self.header = None
-        else:
-            return self.f.readline()
-
 
 class Config(object):
     '''Configuration management class.'''
@@ -303,7 +287,7 @@ class DImage(DObject):
             cr.rectangle(x, y,
                          self.width, self.height)
             cr.set_operator(cairo.OPERATOR_SOURCE)
-            cr.set_source_color(self.background_color)
+            cr.set_source_rgba(*self.background_color)
             cr.fill()
 
         cr.rectangle(x, y,
@@ -391,9 +375,9 @@ class DText(DObject):
 
     def draw(self, cr, x, y):
         self.font.set(cr)
-        cr.set_source_color(self.color)
+        cr.set_source_rgba(*self.color)
         cr.move_to(x, y - self.get_baseline())
-        cr.show_layout(self.layout)
+        PangoCairo.show_layout(cr, self.layout)
 
     def __str__(self):
         return 'DText(%s)' % self.text
@@ -420,7 +404,7 @@ class DContainer(DObject):
         # for contained dlines: register ids
         for n in dline.contained_elements():
             if n.id is not None:
-                print(type(self), ': registering id', n.id)
+                #print(type(self), ': registering id', n.id)
                 self.id_map[n.id] = index
             self.register(index, n)
 
@@ -594,11 +578,16 @@ class DBox(DContainer):
 ################################################################################
 
 class AwareWindow(Gtk.Window):
+    __gtype_name__ = 'AwareWindow'
     '''Notification window'''
 
     def __init__(self, dobject):
         '''Initialise window with dobject to display'''
-        Gtk.Widget.__init__(self)
+        #Gtk.Widget.__init__(self)
+        Gtk.Window.__init__(self, type=Gtk.WindowType.TOPLEVEL)
+        self.set_resizable(False)
+        self.set_keep_above(True)
+        self.set_accept_focus(False)
         # The following seems to look fine with text:
         self.pad_top = 0	# number of pixels to pad
         self.pad_bottom = 2
@@ -606,18 +595,30 @@ class AwareWindow(Gtk.Window):
         self.pad_right = 2
 
         self.window = None
-        self.set_dobject(dobject)
-        self.update()
-
         self.root_window = Gdk.get_default_root_window()
         self.root_size = (self.root_window.get_width(), self.root_window.get_height())
+
+        self.fg_color = parse_color(Config.bar_color)
+        self.bg_color = parse_color(Config.default_bg_color)
+        self.set_dobject(dobject, redraw=False)
+
+        self.canvas = Gtk.DrawingArea()
+        self.canvas.connect("draw", self.draw_canvas)
+        self.add(self.canvas)
+        self.update(recompute_dimensions=False)
 
     def get_dobject(self):
         return self.dobject
 
-    def set_dobject(self, dobject):
+    def update(self, recompute_dimensions=True, redraw=True):
+        if recompute_dimensions:
+            self.update_dimensions()
+        if redraw:
+            self.queue_draw()
+
+    def set_dobject(self, dobject, redraw=True):
         self.dobject = dobject
-        self.update()
+        self.update(redraw=redraw)
 
     def get_pad_width(self):
         '''Total horizontal padding'''
@@ -627,7 +628,7 @@ class AwareWindow(Gtk.Window):
         '''Total vertical padding'''
         return self.pad_top + self.pad_bottom
 
-    def update(self):
+    def update_dimensions(self):
         '''Recompute size and trigger redraw'''
         if self.dobject is not None:
             self.dobject.set_window(self)
@@ -640,72 +641,52 @@ class AwareWindow(Gtk.Window):
             self.queue_draw()
 
     def do_realize(self):
-        '''GTK widget window realisation'''
-        #self.set_flags(Gtk.REALIZED) FIXME
-
+        root = self.root_window
+        allocation = self.get_allocation()
         attr = Gdk.WindowAttr()
-        attr.width = self.width
-        attr.height = self.width
-        attr.x = self.root_size[0]
+        attr.window_type = Gdk.WindowType.TOPLEVEL
+        attr.x = self.root_size[0] - self.width
         attr.y = 0
-        attr.type_hint = Gdk.WindowTypeHint.NOTIFICATION
-        attr.window_type = GDK_WINDOW_TYPE_TOPLEVEL
-        #attr.event_mask = Gdk.EXPOSURE_MASK
-        window = Gdk.Window(self.root_window,
-                            # window_type = Gtk.WindowType.TOPLEVEL,
-                            # event_mask = Gdk.EXPOSURE_MASK, # FIXME
-                            # wclass = Gdk.INPUT_OUTPUT, # FIXME
-                            # x = self.root_size[0], y = 0,
-                            #override_redirect = True),
-                            attributes=attr,
-                            #     Gdk.WindowAttr.NOREDIR
-                            #     | Gdk.WindowAttr.NOREDIR
-                            # ),
-                            attributes_mask=(
-                                Gdk.WindowAttributesType.X
-                                | Gdk.WindowAttributesType.Y
-                                | Gdk.WindowAttributesType.NOREDIR
-                                | Gdk.WindowAttributesType.TYPE_HINT
-                            ))
-        # window.set_width(self.width)
-        # window.set_height(self.height)
-        # window.set_position(Gtk.WindowPosition(x = self.root_size[0], y = 0)),
+        attr.width = self.width
+        attr.height = self.height
+        attr.visual = self.get_visual()
+        attr.event_mask = self.get_events() | Gdk.EventMask.EXPOSURE_MASK
+        WAT = Gdk.WindowAttributesType
+        mask = WAT.X | WAT.Y | WAT.VISUAL
+        window = Gdk.Window(root, attr, mask);
         window.set_keep_above(True)
-        # window.set_type_hint(Gdk.WindowType.HINT_NOTIFICATION)
+        window.set_override_redirect(True)
+        window.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
         self.window = window
+        self.set_window(window)
+        self.register_window(window)
+        self.set_realized(True)
 
-        self.window.set_user_data(self)
-
-        # self.style.set_background(self.window, Gtk.StateFlags.NORMAL) # FIXME
-        self.update()
-
-
-    def do_unrealize(self):
+    def __do_unrealize(self):
         '''GTK widget window unrealisation'''
         # I doubt that this ever gets called for this widget
         self.window.set_user_data(None)
 
-    def do_size_allocate(self, allocation):
-        '''GTK notification as for what region is visible/to be redrawn'''
-        self.allocation = allocation
-
-    def do_expose_event(self, event):
+    def draw_canvas(self, area, cr):
         '''GTK notification that we should redraw'''
 
-        x, y, w, h = self.allocation
+        rect = self.get_allocation()
+        x = rect.x
+        y = rect.y
+        w = rect.width
+        h = rect.height
 
         # clear background
-        cr = self.window.cairo_create()
         cr.save()
         cr.rectangle(0, 0, self.width, self.height)
         cr.set_operator(cairo.OPERATOR_SOURCE)
-        cr.set_source_color(self.style.bg[self.state])
+        cr.set_source_rgba(*self.bg_color)#.red, self.fg_color.green, self.fg_color.blue)
         cr.fill()
         cr.restore()
 
         # draw frame
         cr.save()
-        cr.set_source_color(self.style.fg[self.state])
+        cr.set_source_rgba(*self.fg_color)
         cr.rectangle(2, -2,
                      self.width, self.height)
         cr.set_line_width(1.0)
@@ -715,9 +696,6 @@ class AwareWindow(Gtk.Window):
 
         # draw dobject
         self.dobject.draw_to(cr, self.pad_left, self.pad_top)
-
-
-GObject.type_register(AwareWindow)
 
 notifier = None	# global AwareWindow
 
@@ -955,9 +933,12 @@ MESSAGE_FORCE_SHUTDOWN = 'FORCE-SHUTDOWN'
 MESSAGE_UPDATE = 'UPDATE'
 MESSAGE_END = 'END'
 
+MESSAGES_DEBUG = True
+
 class ListenerAlreadyExistsException(Exception):
     def __init__(self):
         pass
+
 
 class AwarePipe(object):
     '''Named pipe support (and pid-based validation) for communication'''
@@ -983,7 +964,7 @@ class AwarePipe(object):
         except subprocess.CalledProcessError:
             self.cleanup()
             return False
-        if proc_name != 'python':
+        if proc_name != 'python' and proc_name != 'python3':
             self.cleanup()
             return False
         return True
@@ -1215,10 +1196,6 @@ class Main(object):
         dl.start()
 
         win = AwareWindow(DBox())
-        fg_color = parse_color(Config.bar_color)
-        bg_color = parse_color(Config.default_bg_color, 'black')
-        # win.modify_fg(Gtk.StateFlags.NORMAL, fg_color) # FIXME
-        # win.modify_bg(Gtk.StateFlags.NORMAL, bg_color) # FIXME
 
         global notifier
         notifier = win
@@ -1229,7 +1206,7 @@ class Main(object):
             os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
 
         win.show_all()
-        Gtkp.main()
+        Gtk.main()
 
 
 if __name__ == '__main__':
@@ -1237,5 +1214,3 @@ if __name__ == '__main__':
     m.run()
     sys.exit(0)
 
-# Makefile
-# github
