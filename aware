@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 #
 # This file is Copyright (C) 2015 Christoph Reichenbach
 #
@@ -23,25 +23,27 @@
 
 
 from __future__ import print_function
-import ConfigParser
+import configparser
 import argparse
 import cairo
 import fcntl
 import fileinput
-import gobject
-import gtk
 import os
 import os.path
-import pango
-import pygtk
 import signal
 import subprocess
 import sys
 import threading
 import time
 import traceback
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import GLib, Gtk, Gdk, GObject, Pango
 
-pygtk.require('2.0')
+# workaround for broken Gdk
+GDK_WINDOW_TYPE_TOPLEVEL = Gdk.WindowType.TOPLEVEL
+if (0 + GDK_WINDOW_TYPE_TOPLEVEL) == 0:
+    GDK_WINDOW_TYPE_TOPLEVEL = 1
 
 def create_exclusive(filename):
     try:
@@ -57,7 +59,7 @@ def create_exclusive(filename):
 # Basic information and utilities
 ################################################################################
 
-VERSION = '0.1.2'
+VERSION = '0.3.0'
 CONFIG_FILE = os.path.expanduser('~/.aware')
 CONTROL_CHAR = '+'	# as in +text, +img, ...
 ALLOCATION_TRIES = 10	# number of times we back off on trying to server lock before aborting
@@ -78,10 +80,10 @@ def parse_color(colname, default = 'white'):
     if len(colname) > 2 and colname[0] == colname[-1] and colname[0] in '\'\"':
         colname = colname[1:len(colname) - 1]
     try:
-        return gtk.gdk.color_parse(colname)
+        return Gdk.color_parse(colname)
     except Exception:
         log('Unknown color "%s"' % colname)
-        return gtk.gdk.color_parse(default)
+        return Gdk.color_parse(default)
 
 
 ################################################################################
@@ -118,11 +120,11 @@ class Config(object):
                 if type(v) != str:
                     v = str(v)
                 defaults[d] = v
-        config = ConfigParser.SafeConfigParser(defaults)
+        config = configparser.ConfigParser(defaults)
         conf = {}
         try:
             f = open(CONFIG_FILE, 'r')
-            config.readfp(FakeSecHead(f, section))
+            config.read_file(['[%s]\n' % section] + list(f))
             conf = config.items(section)
         except IOError:
             pass
@@ -137,7 +139,7 @@ class Config(object):
                 elif type(ov) is float:
                     v = float(v)
                 setattr(Config, k, v)
-            except Exception, e:
+            except Exception as e:
                 log(e.message)
                 log('Expected %s for option %s but got "%s"' % (type(ov).__name__, k, v))
 
@@ -255,8 +257,8 @@ class DImage(DObject):
         DObject.__init__(self)
         image = image.strip()
         try:
-            self.source_pixbuf = gtk.gdk.pixbuf_new_from_file(os.path.expanduser(image))
-        except Exception, e:
+            self.source_pixbuf = Gdk.pixbuf_new_from_file(os.path.expanduser(image))
+        except Exception as e:
             log(e.message)
             log('Failed to load image "%s"' % image)
             raise e
@@ -309,7 +311,7 @@ class DImage(DObject):
         cr.set_source_pixbuf(self.pixbuf, x, y)
         cr.set_operator(cairo.OPERATOR_OVER)
         cr.fill();
-	cr.restore();
+        cr.restore();
 
     def configure(self, key, value):
         if key == 'width':
@@ -364,12 +366,12 @@ class DText(DObject):
 
     def set_window(self, window):
         self.layout = window.create_pango_layout(self.text)
-        self.layout.set_font_description(pango.FontDescription(self.font.full_name()))
+        self.layout.set_font_description(Pango.FontDescription(self.font.full_name()))
 
     def get_size(self):
-        bo = int(self.layout.get_iter().get_baseline() / pango.SCALE)
-        width = int(self.layout.get_size()[0] / pango.SCALE)
-        height = int(self.layout.get_size()[1] / pango.SCALE)
+        bo = int(self.layout.get_iter().get_baseline() / Pango.SCALE)
+        width = int(self.layout.get_size()[0] / Pango.SCALE)
+        height = int(self.layout.get_size()[1] / Pango.SCALE)
         return (width, bo, height - bo)
 
     def configure(self, key, value):
@@ -521,7 +523,7 @@ class DScript(DContainer):
                 dobj.id = myid
                 container.append(dobj)
                 global notifier
-                gobject.idle_add(notifier.update)
+                GLib.idle_add(notifier.update)
             lock.release()
 
         # start in separate thread so we don't have to wait for script to finish
@@ -591,23 +593,24 @@ class DBox(DContainer):
 # Our GTK widget
 ################################################################################
 
-class AwareWindow(gtk.Window):
+class AwareWindow(Gtk.Window):
     '''Notification window'''
 
     def __init__(self, dobject):
         '''Initialise window with dobject to display'''
-        gtk.Widget.__init__(self)
+        Gtk.Widget.__init__(self)
         # The following seems to look fine with text:
         self.pad_top = 0	# number of pixels to pad
         self.pad_bottom = 2
         self.pad_left = 5
         self.pad_right = 2
 
+        self.window = None
         self.set_dobject(dobject)
         self.update()
 
-        self.root_window = gtk.gdk.get_default_root_window()
-        self.root_size = self.root_window.get_size()
+        self.root_window = Gdk.get_default_root_window()
+        self.root_size = (self.root_window.get_width(), self.root_window.get_height())
 
     def get_dobject(self):
         return self.dobject
@@ -638,21 +641,42 @@ class AwareWindow(gtk.Window):
 
     def do_realize(self):
         '''GTK widget window realisation'''
-        self.set_flags(gtk.REALIZED)
+        #self.set_flags(Gtk.REALIZED) FIXME
 
-        window = gtk.gdk.Window(self.root_window, self.width, self.height,
-                                window_type = gtk.gdk.WINDOW_TOPLEVEL,
-                                event_mask = gtk.gdk.EXPOSURE_MASK,
-                                wclass = gtk.gdk.INPUT_OUTPUT,
-                                x = self.root_size[0], y = 0,
-                                override_redirect = True)
+        attr = Gdk.WindowAttr()
+        attr.width = self.width
+        attr.height = self.width
+        attr.x = self.root_size[0]
+        attr.y = 0
+        attr.type_hint = Gdk.WindowTypeHint.NOTIFICATION
+        attr.window_type = GDK_WINDOW_TYPE_TOPLEVEL
+        #attr.event_mask = Gdk.EXPOSURE_MASK
+        window = Gdk.Window(self.root_window,
+                            # window_type = Gtk.WindowType.TOPLEVEL,
+                            # event_mask = Gdk.EXPOSURE_MASK, # FIXME
+                            # wclass = Gdk.INPUT_OUTPUT, # FIXME
+                            # x = self.root_size[0], y = 0,
+                            #override_redirect = True),
+                            attributes=attr,
+                            #     Gdk.WindowAttr.NOREDIR
+                            #     | Gdk.WindowAttr.NOREDIR
+                            # ),
+                            attributes_mask=(
+                                Gdk.WindowAttributesType.X
+                                | Gdk.WindowAttributesType.Y
+                                | Gdk.WindowAttributesType.NOREDIR
+                                | Gdk.WindowAttributesType.TYPE_HINT
+                            ))
+        # window.set_width(self.width)
+        # window.set_height(self.height)
+        # window.set_position(Gtk.WindowPosition(x = self.root_size[0], y = 0)),
         window.set_keep_above(True)
-        window.set_type_hint(gtk.gdk.WINDOW_TYPE_HINT_NOTIFICATION)
+        # window.set_type_hint(Gdk.WindowType.HINT_NOTIFICATION)
         self.window = window
 
         self.window.set_user_data(self)
 
-        self.style.set_background(self.window, gtk.STATE_NORMAL)
+        # self.style.set_background(self.window, Gtk.StateFlags.NORMAL) # FIXME
         self.update()
 
 
@@ -693,7 +717,7 @@ class AwareWindow(gtk.Window):
         self.dobject.draw_to(cr, self.pad_left, self.pad_top)
 
 
-gobject.type_register(AwareWindow)
+GObject.type_register(AwareWindow)
 
 notifier = None	# global AwareWindow
 
@@ -706,8 +730,8 @@ def update_notifier(message):
             def update():
                 sp.add_dobjects(notifier.get_dobject())
                 notifier.update()
-            gobject.idle_add(update)
-    except Exception, e:
+            GLib.idle_add(update)
+    except Exception as e:
         print(e.message, file=sys.stderr)
         log(traceback.format_exc())
         return False
@@ -880,7 +904,7 @@ class SpecProcessor(object):
                     dname = tokens.next()
                     try:
                         dobj = self.dobject_for(dname, body)
-                    except Exception, e:
+                    except Exception as e:
                         log(e.message)
                         log(traceback.format_exc())
                         dobj = DText('<ERROR>', color='red')
@@ -914,7 +938,7 @@ class SpecProcessor(object):
                     result_append(DText(l.strip()))
 
             dline_finish()
-        except ParseError, e:
+        except ParseError as e:
             return False
 
         self.line_results = results
@@ -1177,7 +1201,7 @@ class Main(object):
             pid = os.fork()
             if pid > 0:
                 sys.exit(0)
-        except OSError, e:
+        except OSError as e:
             sys.stderr.write("Failed to start daemon: %d (%s)\n" % (e.errno, e.strerror))
             return 1
         log_output = None
@@ -1185,7 +1209,6 @@ class Main(object):
 
     def main(self, message):
         '''Show window and wait for further updates via pipe'''
-        gobject.threads_init()  # magic to make threads work with Gtk+
 
         # start pipe communication
         dl = self.pipe.listener()
@@ -1194,8 +1217,8 @@ class Main(object):
         win = AwareWindow(DBox())
         fg_color = parse_color(Config.bar_color)
         bg_color = parse_color(Config.default_bg_color, 'black')
-        win.modify_fg(gtk.STATE_NORMAL, fg_color)
-        win.modify_bg(gtk.STATE_NORMAL, bg_color)
+        # win.modify_fg(Gtk.StateFlags.NORMAL, fg_color) # FIXME
+        # win.modify_bg(Gtk.StateFlags.NORMAL, bg_color) # FIXME
 
         global notifier
         notifier = win
@@ -1206,7 +1229,7 @@ class Main(object):
             os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
 
         win.show_all()
-        gtk.main()
+        Gtkp.main()
 
 
 if __name__ == '__main__':
