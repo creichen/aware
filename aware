@@ -290,9 +290,9 @@ class DImage(DObject):
 
         cr.rectangle(x, y,
                      self.width, self.height)
-        cr.set_source_pixbuf(self.pixbuf, x, y)
+        cr.set_source_surface(self.pixbuf, x, y)
         cr.set_operator(cairo.OPERATOR_OVER)
-        cr.fill();
+        cr.paint();
         cr.restore();
 
     def configure(self, key, value):
