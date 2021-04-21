@@ -239,7 +239,11 @@ class DImage(DObject):
         DObject.__init__(self)
         image = image.strip()
         try:
-            self.source_pixbuf = GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image))
+            if image.endswith('.png'):
+                self.source_pixbuf = cairo.ImageSurface.create_from_png(os.path.expanduser(image))
+            else:
+                raise('GTK/Cairo dropped support for non-png graphics.  Cannot load "%s".' % image)
+            # GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image)) # 
         except Exception as e:
             log(e.message)
             log('Failed to load image "%s"' % image)
@@ -268,10 +272,20 @@ class DImage(DObject):
         self.width = fix(self.width, self.source_pixbuf.get_width())
         self.height = fix(self.height, self.source_pixbuf.get_height())
 
+        self.pixbuf = self.source_pixbuf
+
         if self.pixbuf is not None and self.pixbuf.get_width() == self.width and self.pixbuf.get_height() == self.height:
             return
 
-        self.pixbuf = self.source_pixbuf.scale_simple(self.width, self.height, cairo.FILTER_BEST)
+        self.pixbuf = cairo.ImageSurface(self.source_pixbuf.get_format(), self.width, self.height)
+
+        cr = cairo.Context(self.pixbuf)
+        cr.rectangle(0, 0, self.width, self.height)
+        cr.set_source_surface(self.source_pixbuf, 0, 0)
+        cr.set_operator(cairo.OPERATOR_OVER)
+        cr.scale((self.width * 1.0) / self.source_pixbuf.get_width(),
+                   (self.height * 1.0) / self.source_pixbuf.get_height())
+        cr.paint()
 
     def get_size(self):
         return (self.width, self.height, 0)
@@ -288,8 +302,8 @@ class DImage(DObject):
             cr.set_source_rgba(*self.background_color)
             cr.fill()
 
-        cr.rectangle(x, y,
-                     self.width, self.height)
+        # cr.rectangle(x, y,
+        #              self.width, self.height)
         cr.set_source_surface(self.pixbuf, x, y)
         cr.set_operator(cairo.OPERATOR_OVER)
         cr.paint();
@@ -771,6 +785,8 @@ class SpecProcessor(object):
     '''Parses specification input and produces an output DObject'''
 
     def __init__(self, string):
+        if type(string) == bytes:
+            string = string.decode('utf-8')
         self.lines = [l for l in string.split('\n') if len(l) > 0]
 
     def tokenize(self, s):
@@ -931,7 +947,7 @@ MESSAGE_FORCE_SHUTDOWN = 'FORCE-SHUTDOWN'
 MESSAGE_UPDATE = 'UPDATE'
 MESSAGE_END = 'END'
 
-MESSAGES_DEBUG = True
+MESSAGES_DEBUG = False
 
 class ListenerAlreadyExistsException(Exception):
     def __init__(self):
