@@ -41,7 +41,6 @@ def create_exclusive(filename):
     try:
         fd = os.open(filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        print('--> File exists, aborting with None')
         return None
     return os.fdopen(fd, 'w')
 
@@ -613,6 +612,7 @@ class DBox(DContainer):
 
 class GUI:
     notifier = None	# global AwareWindow
+    failed = False
 
     GLib = None
     Gtk = None
@@ -624,19 +624,30 @@ class GUI:
     def init_graphics():
         # We initialise libraries on demand, so that we can run aware without X11
         # to notify an X11 'aware' for the same user
+        if GUI.failed:
+            raise NoGUIException()
+
         if GUI.GLib is not None:
             return
 
-        import gi
-        gi.require_version('Gtk', '3.0')
-        gi.require_version('PangoCairo', '1.0')
-        from gi.repository import GLib, Gtk, Gdk, Pango, PangoCairo, GdkPixbuf
-        GUI.GLib = GLib
-        GUI.Gtk = Gtk
-        GUI.Gdk = Gdk
-        GUI.Pango = Pango
-        GUI.PangoCairo = PangoCairo
-        GUI.GdkPixbuf = GdkPixbuf
+        try:
+            import gi
+            gi.require_version('Gtk', '3.0')
+            gi.require_version('PangoCairo', '1.0')
+            from gi.repository import GLib, Gtk, Gdk, Pango, PangoCairo, GdkPixbuf
+            if not Gtk.init_check()[0]:
+                GUI.failed = True
+                raise NoGUIException()
+
+            GUI.GLib = GLib
+            GUI.Gtk = Gtk
+            GUI.Gdk = Gdk
+            GUI.Pango = Pango
+            GUI.PangoCairo = PangoCairo
+            GUI.GdkPixbuf = GdkPixbuf
+        except RuntimeError:
+            GUI.failed = True
+            raise NoGUIException()
 
     @staticmethod
     def refresh_on_idle():
@@ -1012,6 +1023,10 @@ class ListenerAlreadyExistsException(Exception):
     def __init__(self):
         pass
 
+class NoGUIException(Exception):
+    def __init__(self):
+        pass
+
 
 class AwarePipe(object):
     '''Named pipe support (and pid-based validation) for communication'''
@@ -1230,7 +1245,7 @@ class Main(object):
     def version(self):
         '''Toplevel command: Prints version and copyright information.'''
         print('aware, version', VERSION)
-        print('Copyright (C) 2015 Christoph Reichenbach <creichen%sgmail.com>' % '@')
+        print('Copyright (C) 2015-2021 Christoph Reichenbach <creichen%sgmail.com>' % '@')
         print('This program is provided WITHOUT WARRANTY, either expressed or implied, under the terms of the GNU GPL v2.')
 
     def get_stdin(self, prefix=''):
@@ -1253,6 +1268,7 @@ class Main(object):
     def display(self):
         '''Toplevel command: print out messages'''
         retry = True
+        try_gui = True
 
         while retry:
             retry = False
@@ -1265,12 +1281,17 @@ class Main(object):
                         f.write('\n' + MESSAGE_END + '\n')
                 else:
                     retval = 1
-                    retval = self.args.main(self.message())
+                    if try_gui:
+                        retval = self.args.main(self.message())
+                    else:
+                        print('No GUI available, aborting.')
                     self.pipe.cleanup()
                     sys.exit(retval)
             except ListenerAlreadyExistsException:
-                print('listener already exists, weird')
                 retry = True
+            except NoGUIException:
+                retry = True
+                try_gui = False
 
     def stop(self):
         '''Toplevel command: stop showing messages'''
@@ -1302,6 +1323,9 @@ class Main(object):
 
     def main(self, message):
         '''Show window and wait for further updates via pipe'''
+
+        # try to fail early
+        GUI.init_graphics()
 
         # start pipe communication
         dl = self.pipe.listener()
