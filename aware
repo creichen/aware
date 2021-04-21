@@ -955,18 +955,31 @@ class AwarePipe(object):
     def exists(self):
         '''Does the pipe exist?  Is the PID up to date?  Does it point to a python process?  Cleans up if not.'''
         if not os.path.exists(self.filename) or not os.path.exists(self.pid_filename):
+            if MESSAGES_DEBUG:
+                print('[pipe] no pipe found: %d %d %d' % (os.path.exists(self.filename), os.path.exists(self.pid_filename)))
             return False
         claimed_pid = 0
         with open(self.pid_filename) as f:
             claimed_pid = int(f.read())
+            if MESSAGES_DEBUG:
+                print('[pipe] exists, supposedly for pid %d' % claimed_pid)
         try:
             proc_name = subprocess.check_output(['/bin/ps', '-p', '%d' % claimed_pid, '-o', 'comm=']).strip()
+            proc_name = proc_name.decode('ascii')
+            if MESSAGES_DEBUG:
+                print('[pipe] procname = "%s"' % proc_name)
         except subprocess.CalledProcessError:
+            if MESSAGES_DEBUG:
+                print('[pipe] /bin/ps failed for pid %d: no such process?' % claimed_pid)
             self.cleanup()
             return False
         if proc_name != 'python' and proc_name != 'python3':
+            if MESSAGES_DEBUG:
+                print('[pipe] pipe is stale')
             self.cleanup()
             return False
+        if MESSAGES_DEBUG:
+            print('[pipe] pipe exists and seems ready')
         return True
 
     def listener(self):
@@ -986,6 +999,8 @@ class AwarePipe(object):
         pidfile.close()
 
         os.mkfifo(self.filename)
+        if MESSAGES_DEBUG:
+            print('[pipe] starting update listener')
         return UpdateListener(self.filename)
 
     def open_writer(self):
@@ -1012,6 +1027,8 @@ class UpdateListener(threading.Thread):
         self.fifo_name = fifo_name
         self.most_recent_update = time.time()
         self.lines = []
+        if MESSAGES_DEBUG:
+            print('[UL] listener started')
 
     def run(self):
         '''Continuously polls for input/updates via named pipe.'''
@@ -1026,6 +1043,8 @@ class UpdateListener(threading.Thread):
                     if len(new_lines) > 0:
                         buffer = new_lines[-1]
                         self.lines += new_lines[:len(new_lines) - 1]
+                        if MESSAGES_DEBUG:
+                            print('[UL] read (aggregate): "%s"' % self.lines)
                         self.process_command()
                     if update == '': # eof
                         f.close()
@@ -1146,6 +1165,7 @@ class Main(object):
             retry = False
             try:
                 if self.pipe.exists():
+                    print('pipe already exists')
                     buf = self.message('!') # prepend '!' to each line as part of the transfer protocol to avoid confusion with messages
                     with self.pipe.open_writer() as f:
                         f.write('\n' + MESSAGE_UPDATE + '\n')
@@ -1153,7 +1173,7 @@ class Main(object):
                         f.write('\n' + MESSAGE_END + '\n')
                 else:
                     retval = 1
-
+                    print('must start own pipe')
                     retval = self.args.main(self.message())
                     self.pipe.cleanup()
                     sys.exit(retval)
