@@ -39,7 +39,7 @@ import traceback
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('PangoCairo', '1.0')
-from gi.repository import GLib, Gtk, Gdk, GObject, Pango, PangoCairo
+from gi.repository import GLib, Gtk, Gdk, GObject, Pango, PangoCairo, GdkPixbuf
 
 # workaround for broken Gdk
 GDK_WINDOW_TYPE_TOPLEVEL = Gdk.WindowType.TOPLEVEL
@@ -49,11 +49,9 @@ if (0 + GDK_WINDOW_TYPE_TOPLEVEL) == 0:
 def create_exclusive(filename):
     try:
         fd = os.open(filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError as e:
-        if e.errno == errno.EEXIST:
-            return None
-        else:
-            raise
+    except FileExistsError:
+        print('--> File exists, aborting with None')
+        return None
     return os.fdopen(fd, 'w')
 
 ################################################################################
@@ -241,7 +239,7 @@ class DImage(DObject):
         DObject.__init__(self)
         image = image.strip()
         try:
-            self.source_pixbuf = Gdk.pixbuf_new_from_file(os.path.expanduser(image))
+            self.source_pixbuf = GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image))
         except Exception as e:
             log(e.message)
             log('Failed to load image "%s"' % image)
@@ -952,11 +950,19 @@ class AwarePipe(object):
         self.pid_filename = pid_filename
         self.allocation_tries = ALLOCATION_TRIES
 
-    def exists(self):
-        '''Does the pipe exist?  Is the PID up to date?  Does it point to a python process?  Cleans up if not.'''
-        if not os.path.exists(self.filename) or not os.path.exists(self.pid_filename):
+    def pipe_exists(self):
+        '''Does the pipe exist?'''
+        if not os.path.exists(self.filename):
             if MESSAGES_DEBUG:
-                print('[pipe] no pipe found: %d %d %d' % (os.path.exists(self.filename), os.path.exists(self.pid_filename)))
+                print('[pipe] no pipe file found: %d' % (os.path.exists(self.filename)))
+            return False
+        return True
+
+    def lockfile_exists(self):
+        '''Does the lock file exist, and is the PID in the lock file up to date?  Does it point to a python process?'''
+        if not os.path.exists(self.pid_filename):
+            if MESSAGES_DEBUG:
+                print('[pipe] no lock file found: %d' % (os.path.exists(self.pid_filename)))
             return False
         claimed_pid = 0
         with open(self.pid_filename) as f:
@@ -971,16 +977,25 @@ class AwarePipe(object):
         except subprocess.CalledProcessError:
             if MESSAGES_DEBUG:
                 print('[pipe] /bin/ps failed for pid %d: no such process?' % claimed_pid)
-            self.cleanup()
             return False
         if proc_name != 'python' and proc_name != 'python3':
             if MESSAGES_DEBUG:
                 print('[pipe] pipe is stale')
-            self.cleanup()
             return False
         if MESSAGES_DEBUG:
             print('[pipe] pipe exists and seems ready')
         return True
+
+    def exists(self):
+        '''Does the pipe exist?  Is the PID up to date?  Does it point to a python process?  Cleans up if not.'''
+        pipe_ok = self.pipe_exists()
+        lock_ok = self.lockfile_exists()
+
+        if pipe_ok and lock_ok:
+            return True
+
+        self.cleanup()
+        return False
 
     def listener(self):
         '''Creates an UpdateListener, or raises ListenerAlreadyExistsException if we couldn't get an exclusive lock.
@@ -991,8 +1006,11 @@ class AwarePipe(object):
 
         self.allocation_tries -= 1
 
+        if MESSAGES_DEBUG:
+            print('[pipe] trying to grab lockfile "%s"' % self.pid_filename)
         pidfile = create_exclusive(self.pid_filename)
         if pidfile is None:
+            print('[pipe] no exception, but no success either')
             raise ListenerAlreadyExistsException()
 
         pidfile.write('%s' % os.getpid())
@@ -1165,19 +1183,20 @@ class Main(object):
             retry = False
             try:
                 if self.pipe.exists():
-                    print('pipe already exists')
+                    print('pipe ready, using')
                     buf = self.message('!') # prepend '!' to each line as part of the transfer protocol to avoid confusion with messages
                     with self.pipe.open_writer() as f:
                         f.write('\n' + MESSAGE_UPDATE + '\n')
                         f.write(buf)
                         f.write('\n' + MESSAGE_END + '\n')
                 else:
+                    print('pipe failed')
                     retval = 1
-                    print('must start own pipe')
                     retval = self.args.main(self.message())
                     self.pipe.cleanup()
                     sys.exit(retval)
             except ListenerAlreadyExistsException:
+                print('listener already exists, weird')
                 retry = True
 
     def stop(self):
@@ -1210,6 +1229,7 @@ class Main(object):
 
     def main(self, message):
         '''Show window and wait for further updates via pipe'''
+        print('trying myself')
 
         # start pipe communication
         dl = self.pipe.listener()
@@ -1222,6 +1242,7 @@ class Main(object):
 
         if not update_notifier(message):
             # failed to start up properly
+            print('well that escalated quickly')
             self.pipe.cleanup()
             os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
 
