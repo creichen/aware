@@ -48,7 +48,7 @@ def create_exclusive(filename):
 # Basic information and utilities
 ################################################################################
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 CONFIG_FILE = os.path.expanduser('~/.aware')
 CONTROL_CHAR = '+'	# as in +text, +img, ...
 ALLOCATION_TRIES = 10	# number of times we back off on trying to server lock before aborting
@@ -611,23 +611,48 @@ class DBox(DContainer):
 ################################################################################
 
 class GUI:
-    notifier = None	# global AwareWindow
-    failed = False
+    def __init__(self):
+        self.notifier = None	# global AwareWindow
+        self.failed = False
 
-    GLib = None
-    Gtk = None
-    Gdk = None
-    Pango = None
-    PangoCairo = None
+        self._GLib = None
+        self._Gtk = None
+        self._Gdk = None
+        self._Pango = None
+        self._PangoCairo = None
 
-    @staticmethod
-    def init_graphics():
+    @property
+    def GLib(self):
+        self.init_graphics()
+        return self._GLib
+
+    @property
+    def Gtk(self):
+        self.init_graphics()
+        return self._Gtk
+
+    @property
+    def Gdk(self):
+        self.init_graphics()
+        return self._Gdk
+
+    @property
+    def Pango(self):
+        self.init_graphics()
+        return self._Pango
+
+    @property
+    def PangoCairo(self):
+        self.init_graphics()
+        return self._PangoCairo
+
+    def init_graphics(self):
         # We initialise libraries on demand, so that we can run aware without X11
         # to notify an X11 'aware' for the same user
-        if GUI.failed:
+        if self.failed:
             raise NoGUIException()
 
-        if GUI.GLib is not None:
+        if self._GLib is not None:
             return
 
         try:
@@ -636,36 +661,35 @@ class GUI:
             gi.require_version('PangoCairo', '1.0')
             from gi.repository import GLib, Gtk, Gdk, Pango, PangoCairo, GdkPixbuf
             if not Gtk.init_check()[0]:
-                GUI.failed = True
+                self.failed = True
                 raise NoGUIException()
 
-            GUI.GLib = GLib
-            GUI.Gtk = Gtk
-            GUI.Gdk = Gdk
-            GUI.Pango = Pango
-            GUI.PangoCairo = PangoCairo
-            GUI.GdkPixbuf = GdkPixbuf
+            self._GLib = GLib
+            self._Gtk = Gtk
+            self._Gdk = Gdk
+            self._Pango = Pango
+            self._PangoCairo = PangoCairo
+            self._GdkPixbuf = GdkPixbuf
         except RuntimeError:
-            GUI.failed = True
+            self.failed = True
             raise NoGUIException()
 
-    @staticmethod
-    def refresh_on_idle():
-        GUI.init_graphics()
-        GUI.GLib.idle_add(GUI.notifier.update)
+    def refresh_on_idle(self):
+        self.init_graphics()
+        self._GLib.idle_add(self.notifier.update)
 
-    @staticmethod
-    def make_window():
-        GUI.init_graphics()
+    def make_window(self):
+        self.init_graphics()
+        gui = self
 
-        class AwareWindow(GUI.Gtk.Window):
+        class AwareWindow(self._Gtk.Window):
             __gtype_name__ = 'AwareWindow'
             '''Notification window'''
 
             def __init__(self, dobject):
                 '''Initialise window with dobject to display'''
-                #GUI.Gtk.Widget.__init__(self)
-                GUI.Gtk.Window.__init__(self, type=GUI.Gtk.WindowType.TOPLEVEL)
+                #self._Gtk.Widget.__init__(self)
+                gui._Gtk.Window.__init__(self, type=gui._Gtk.WindowType.TOPLEVEL)
                 self.set_resizable(False)
                 self.set_keep_above(True)
                 self.set_accept_focus(False)
@@ -676,14 +700,14 @@ class GUI:
                 self.pad_right = 2
 
                 self.window = None
-                self.root_window = GUI.Gdk.get_default_root_window()
+                self.root_window = gui._Gdk.get_default_root_window()
                 self.root_size = (self.root_window.get_width(), self.root_window.get_height())
 
                 self.fg_color = parse_color(Config.bar_color)
                 self.bg_color = parse_color(Config.default_bg_color)
                 self.set_dobject(dobject, redraw=False)
 
-                self.canvas = GUI.Gtk.DrawingArea()
+                self.canvas = gui._Gtk.DrawingArea()
                 self.canvas.connect("draw", self.draw_canvas)
                 self.add(self.canvas)
                 self.update(recompute_dimensions=False)
@@ -724,20 +748,20 @@ class GUI:
             def do_realize(self):
                 root = self.root_window
                 allocation = self.get_allocation()
-                attr = GUI.Gdk.WindowAttr()
-                attr.window_type = GUI.Gdk.WindowType.TOPLEVEL
+                attr = gui._Gdk.WindowAttr()
+                attr.window_type = gui._Gdk.WindowType.TOPLEVEL
                 attr.x = self.root_size[0] - self.width
                 attr.y = 0
                 attr.width = self.width
                 attr.height = self.height
                 attr.visual = self.get_visual()
-                attr.event_mask = self.get_events() | GUI.Gdk.EventMask.EXPOSURE_MASK
-                WAT = GUI.Gdk.WindowAttributesType
+                attr.event_mask = self.get_events() | gui._Gdk.EventMask.EXPOSURE_MASK
+                WAT = gui._Gdk.WindowAttributesType
                 mask = WAT.X | WAT.Y | WAT.VISUAL
-                window = GUI.Gdk.Window(root, attr, mask);
+                window = gui._Gdk.Window(root, attr, mask);
                 window.set_keep_above(True)
                 window.set_override_redirect(True)
-                window.set_type_hint(GUI.Gdk.WindowTypeHint.NOTIFICATION)
+                window.set_type_hint(gui._Gdk.WindowTypeHint.NOTIFICATION)
                 self.window = window
                 self.set_window(window)
                 self.register_window(window)
@@ -777,19 +801,19 @@ class GUI:
 
                 # draw dobject
                 self.dobject.draw_to(cr, self.pad_left, self.pad_top)
-        GUI.notifier = AwareWindow(DBox())
-        return GUI.notifier
 
-    @staticmethod
-    def update_notifier(message):
+        self.notifier = AwareWindow(DBox())
+        return self.notifier
+
+    def update_notifier(self, message):
         '''Parse message and append it to the notifier if set'''
         try:
             sp = SpecProcessor(message)
             if sp.parse():
                 def update():
-                    sp.add_dobjects(GUI.notifier.get_dobject())
-                    GUI.notifier.update()
-                GUI.GLib.idle_add(update)
+                    sp.add_dobjects(self.notifier.get_dobject())
+                    self.notifier.update()
+                self._GLib.idle_add(update)
         except Exception as e:
             raise e
             print(str(e), file=sys.stderr)
@@ -797,6 +821,7 @@ class GUI:
             return False
         return True
 
+GUI = GUI()
 
 ################################################################################
 # Input spec parsing and processing
