@@ -39,16 +39,20 @@ import traceback
 
 def create_exclusive(filename):
     try:
-        fd = os.open(filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(filename, os.O_CREAT | os.O_EXCL | os.O_RDWR)
     except FileExistsError:
         return None
     return os.fdopen(fd, 'w')
+
+def read_exclusive(filename):
+    fd = os.open(filename, os.O_RDONLY | os.O_EXCL)
+    return os.fdopen(fd, 'r')
 
 ################################################################################
 # Basic information and utilities
 ################################################################################
 
-VERSION = '0.3.1'
+VERSION = '0.3.2'
 CONFIG_FILE = os.path.expanduser('~/.aware')
 CONTROL_CHAR = '+'	# as in +text, +img, ...
 ALLOCATION_TRIES = 10	# number of times we back off on trying to server lock before aborting
@@ -1080,8 +1084,13 @@ class AwarePipe(object):
                 print('[pipe] no lock file found: %d' % (os.path.exists(self.pid_filename)))
             return False
         claimed_pid = 0
-        with open(self.pid_filename) as f:
-            claimed_pid = int(f.read())
+        with read_exclusive(self.pid_filename) as f:
+            try:
+                claimed_pid = int(f.read())
+            except ValueError:
+                if MESSAGES_DEBUG:
+                    print('[pipe] exists, but pid is ill-formed (shouldnot happen!)')
+                return False
             if MESSAGES_DEBUG:
                 print('[pipe] exists, supposedly for pid %d' % claimed_pid)
         try:
@@ -1103,13 +1112,28 @@ class AwarePipe(object):
 
     def exists(self):
         '''Does the pipe exist?  Is the PID up to date?  Does it point to a python process?  Cleans up if not.'''
-        pipe_ok = self.pipe_exists()
-        lock_ok = self.lockfile_exists()
+        if self.lockfile_exists():
+            for n in range(1, 11):
+                pipe_ok = self.pipe_exists()
+                if pipe_ok:
+                    return True
+                # Inconsistent state: most likely someone is in the middle of setting things up
+                time.sleep(0.0001 * n)
 
-        if pipe_ok and lock_ok:
-            return True
+            # Nobody set up the pipe;
+            if MESSAGES_DEBUG:
+                print('[pipe] assuming misclassified lock file pid; cleaning up')
+            self.cleanup()
 
-        self.cleanup()
+        if self.pipe_exists():
+            if self.lockfile_exists():
+                return True
+
+            if MESSAGES_DEBUG:
+                print('[pipe] pipe without lock file: cleaning up')
+            self.cleanup()
+
+
         return False
 
     def listener(self):
@@ -1125,20 +1149,23 @@ class AwarePipe(object):
             print('[pipe] trying to grab lockfile "%s"' % self.pid_filename)
         pidfile = create_exclusive(self.pid_filename)
         if pidfile is None:
-            print('[pipe] no exception, but no success either')
+            if MESSAGES_DEBUG:
+                print('[pipe] no exception, but no success either')
             raise ListenerAlreadyExistsException()
 
         pidfile.write('%s' % os.getpid())
         pidfile.close()
 
-        os.mkfifo(self.filename)
+        os.mkfifo(self.filename) # BUG 1, 3
         if MESSAGES_DEBUG:
             print('[pipe] starting update listener')
         return UpdateListener(self.filename)
 
     def open_writer(self):
         '''Opens pipe for writing.'''
-        return open(self.filename, 'w')
+        fd = open(self.filename, 'w')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
 
     def cleanup(self):
         '''Best-effort pipe and pid file cleanup.'''
@@ -1168,7 +1195,7 @@ class UpdateListener(threading.Thread):
         buffer = ''
         try:
             while True:
-                f = open(self.fifo_name)
+                f = open(self.fifo_name, 'r')
                 while not f.closed:
                     update = f.read()
                     buffer += update
@@ -1182,7 +1209,7 @@ class UpdateListener(threading.Thread):
                     if update == '': # eof
                         f.close()
         finally:
-            os.remove(self.fifo_name)
+            AwarePipe().cleanup()
 
 
     def process_command(self):
@@ -1197,7 +1224,11 @@ class UpdateListener(threading.Thread):
                     or self.lines[0] == MESSAGE_FORCE_SHUTDOWN):
 
                     # This solution is brutal but effective
-                    AwarePipe().cleanup()
+                    try:
+                        # Shouldn't need the extra 'try' block in practi
+                        AwarePipe().cleanup()
+                    except:
+                        pass
                     os.kill(os.getpid(), signal.SIGKILL) # this seems to be the only thing that works...
                 # otherwise ignore the shutdown request to avoid having the user miss something
                 self.lines = self.lines[1:]
