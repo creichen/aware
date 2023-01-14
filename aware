@@ -52,7 +52,7 @@ def read_exclusive(filename):
 # Basic information and utilities
 ################################################################################
 
-VERSION = '0.3.2'
+VERSION = '0.4.0'
 CONFIG_FILE = os.path.expanduser('~/.aware')
 CONTROL_CHAR = '+'	# as in +text, +img, ...
 ALLOCATION_TRIES = 10	# number of times we back off on trying to server lock before aborting
@@ -269,7 +269,7 @@ class DImage(DObject):
                 self.source_pixbuf = cairo.ImageSurface.create_from_png(os.path.expanduser(image))
             else:
                 raise('GTK/Cairo dropped support for non-png graphics.  Cannot load "%s".' % image)
-            # GUI.GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image)) # 
+            # GUI.GdkPixbuf.Pixbuf.new_from_file(os.path.expanduser(image))
         except Exception as e:
             log(e.message)
             log('Failed to load image "%s"' % image)
@@ -624,11 +624,18 @@ class GUI:
         self._Gdk = None
         self._Pango = None
         self._PangoCairo = None
+        self._GtkLayerShell = None
+        self.wayland = False
 
     @property
     def GLib(self):
         self.init_graphics()
         return self._GLib
+
+    @property
+    def GtkLayerShell(self):
+        self.init_graphics()
+        return self._GtkLayerShell
 
     @property
     def Gtk(self):
@@ -674,6 +681,17 @@ class GUI:
             self._Pango = Pango
             self._PangoCairo = PangoCairo
             self._GdkPixbuf = GdkPixbuf
+
+            # Wayland-only
+            if sys.env['WAYLAND_DISPLAY'] is not None:
+                try:
+                    print('Trying for Wayland')
+                    gi.require_version('GtkLayerShell', '0.1')
+                    from gi.repository import GtkLayerShell
+                    self._GtkLayerShell = GtkLayerShell
+                    self.wayland = True
+                except ValueError:
+                    pass
         except RuntimeError:
             self.failed = True
             raise NoGUIException()
@@ -762,10 +780,12 @@ class GUI:
                 attr.event_mask = self.get_events() | gui._Gdk.EventMask.EXPOSURE_MASK
                 WAT = gui._Gdk.WindowAttributesType
                 mask = WAT.X | WAT.Y | WAT.VISUAL
-                window = gui._Gdk.Window(root, attr, mask);
-                window.set_keep_above(True)
+
+                window = gui._Gdk.Window(root, attr, mask)
                 window.set_override_redirect(True)
+                window.set_keep_above(True)
                 window.set_type_hint(gui._Gdk.WindowTypeHint.NOTIFICATION)
+
                 self.window = window
                 self.set_window(window)
                 self.register_window(window)
@@ -806,7 +826,139 @@ class GUI:
                 # draw dobject
                 self.dobject.draw_to(cr, self.pad_left, self.pad_top)
 
-        self.notifier = AwareWindow(DBox())
+
+        class WaylandAwareWindow:
+            '''Notification window for Wayland'''
+
+            def __init__(self, dobject):
+                '''Initialise window with dobject to display'''
+                #self._Gtk.Widget.__init__(self)
+                self.topwin = gui.Gtk.Window(type=gui._Gtk.WindowType.TOPLEVEL)
+
+                self.topwin.set_resizable(False)
+                self.topwin.set_keep_above(True)
+                self.topwin.set_accept_focus(False)
+                # The following seems to look fine with text:
+                self.topwin.pad_top = 0	# number of pixels to pad
+                self.topwin.pad_bottom = 2
+                self.topwin.pad_left = 5
+                self.topwin.pad_right = 2
+
+                self.window = None
+                self.root_window = gui._Gdk.get_default_root_window()
+                self.root_size = (self.root_window.get_width(), self.root_window.get_height())
+
+                self.topwin.fg_color = parse_color(Config.bar_color)
+                self.topwin.bg_color = parse_color(Config.default_bg_color)
+                self.set_dobject(dobject, redraw=False)
+
+                self.topwin.canvas = gui._Gtk.DrawingArea()
+                self.topwin.canvas.connect("draw", self.draw_canvas)
+                self.topwin.add(self.topwin.canvas)
+                self.update(recompute_dimensions=False)
+
+                gui.GtkLayerShell.init_for_window(self.topwin)
+                gui.GtkLayerShell.auto_exclusive_zone_enable(self.topwin)
+                gui.GtkLayerShell.set_margin(self.topwin, gui.GtkLayerShell.Edge.TOP, 0)
+                gui.GtkLayerShell.set_margin(self.topwin, gui.GtkLayerShell.Edge.RIGHT, 0)
+                gui.GtkLayerShell.set_margin(self.topwin, gui.GtkLayerShell.Edge.LEFT, 0)
+                gui.GtkLayerShell.set_margin(self.topwin, gui.GtkLayerShell.Edge.BOTTOM, 0)
+
+                gui.GtkLayerShell.set_anchor(self.topwin, gui.GtkLayerShell.Edge.RIGHT, 1)
+                gui.GtkLayerShell.set_anchor(self.topwin, gui.GtkLayerShell.Edge.TOP, 1)
+                #self.topwin.resize(100,20)
+                #self.do_realize()
+                self.window = self.topwin
+
+            def show_all(self):
+                return self.topwin.show_all()
+
+            def get_allocation(self):
+                return self.topwin.get_allocation()
+
+            def create_pango_layout(self, x):
+                return self.topwin.create_pango_layout(x)
+
+            def get_dobject(self):
+                return self.dobject
+
+            def update(self, recompute_dimensions=True, redraw=True):
+                if recompute_dimensions or True:
+                    self.update_dimensions()
+                if redraw or True:
+                    self.topwin.queue_draw()
+
+            def set_dobject(self, dobject, redraw=True):
+                self.dobject = dobject
+                self.update(redraw=redraw)
+
+            def get_pad_width(self):
+                '''Total horizontal padding'''
+                return self.topwin.pad_left + self.topwin.pad_right
+
+            def get_pad_height(self):
+                '''Total vertical padding'''
+                return self.topwin.pad_top + self.topwin.pad_bottom
+
+            def resize(self, w, h):
+                self.topwin.set_size_request(w, h)
+                self.topwin.resize(1, 1)
+
+            def update_dimensions(self):
+                '''Recompute size and trigger redraw'''
+                if self.dobject is not None:
+                    self.dobject.set_window(self.topwin)
+                    print('A')
+                    self.topwin.width = self.dobject.get_width() + self.get_pad_width()
+                    print('C')
+                    self.topwin.height = self.dobject.get_height() + self.get_pad_height()
+                    print('B')
+                    self.resize(self.topwin.width, self.topwin.height)
+                    print(self.topwin.width, self.topwin.height)
+                    self.topwin.queue_draw()
+                    #gui.GtkLayerShell.init_for_window(self.topwin)
+                    #self.topwin.show_all()
+                    print('D')
+
+            def __do_unrealize(self):
+                '''GTK widget window unrealisation'''
+                # I doubt that this ever gets called for this widget
+                self.window.set_user_data(None)
+
+            def draw_canvas(self, area, cr):
+                '''GTK notification that we should redraw'''
+
+                rect = self.get_allocation()
+                x = rect.x
+                y = rect.y
+                w = rect.width
+                h = 100#rect.height
+
+                # clear background
+                cr.save()
+                cr.rectangle(0, 0, self.topwin.width, self.topwin.height)
+                cr.set_operator(cairo.OPERATOR_SOURCE)
+                cr.set_source_rgba(*self.topwin.bg_color)#.red, self.fg_color.green, self.fg_color.blue)
+                cr.fill()
+                cr.restore()
+
+                # draw frame
+                cr.save()
+                cr.set_source_rgba(*self.topwin.fg_color)
+                cr.rectangle(2, -2,
+                             self.topwin.width, self.topwin.height)
+                cr.set_line_width(1.0)
+                cr.set_line_join(cairo.LINE_JOIN_ROUND)
+                cr.stroke()
+                cr.restore()
+
+                # draw dobject
+                self.dobject.draw_to(cr, self.topwin.pad_left, self.topwin.pad_top)
+
+        if gui.wayland:
+            self.notifier = WaylandAwareWindow(DBox())
+        else:
+            self.notifier = AwareWindow(DBox())
         return self.notifier
 
     def update_notifier(self, message):
