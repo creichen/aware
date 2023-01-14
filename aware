@@ -701,7 +701,7 @@ class GUI:
             self._GdkPixbuf = GdkPixbuf
 
             # Wayland-only
-            if os.environ['WAYLAND_DISPLAY'] is not None:
+            if 'WAYLAND_DISPLAY' in os.environ:
                 self._wayland = True
                 self._mode_description = 'XWayland fallback (GtkLayerShell not initialised-- make sure you have libgtk-layer-shell installed!)'
                 try:
