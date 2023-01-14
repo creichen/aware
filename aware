@@ -703,14 +703,14 @@ class GUI:
             # Wayland-only
             if os.environ['WAYLAND_DISPLAY'] is not None:
                 self._wayland = True
-                self._mode_description = 'XWayland fallback (GtkLayerShell not initialised)'
+                self._mode_description = 'XWayland fallback (GtkLayerShell not initialised-- make sure you have libgtk-layer-shell installed!)'
                 try:
                     gi.require_version('GtkLayerShell', '0.1')
                     from gi.repository import GtkLayerShell
                     self._GtkLayerShell = GtkLayerShell
                     self._mode_description = 'Wayland with GtkLayerShell'
                 except ValueError as e:
-                    print(f'While trying to load GtkLayerShell: {e}', file=sys.stderr)
+                    print(f'While trying to load GtkLayerShell: {e} (falling back to XWayland, this will probably look wrong)', file=sys.stderr)
         except RuntimeError:
             self.failed = True
             raise NoGUIException()
