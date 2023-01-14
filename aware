@@ -625,7 +625,8 @@ class GUI:
         self._Pango = None
         self._PangoCairo = None
         self._GtkLayerShell = None
-        self.wayland = False
+        self._wayland = False
+        self._mode_description = 'uninitialised'
 
     @property
     def GLib(self):
@@ -657,6 +658,23 @@ class GUI:
         self.init_graphics()
         return self._PangoCairo
 
+    def print_info(self):
+        print(f'Mode: {self._mode_description}')
+        for libname in ['GLib', 'Gdk',  'GdkPixbuf', 'Gtk', 'Pango', 'PangoCairo', 'GtkLayerShell']:
+            lib = getattr(self, f'_{libname}')
+            if lib is None:
+                print(f'- {libname} missing')
+            else:
+                version_refs = [n for n in dir(lib) if 'version' in n.lower()]
+                if 'MICRO_VERSION' in version_refs:
+                    print(f'+ {libname} {lib.MAJOR_VERSION}.{lib.MINOR_VERSION}.{lib.MICRO_VERSION}')
+                elif 'PIXBUF_VERSION' in version_refs:
+                    print(f'+ {libname} {lib.PIXBUF_VERSION}')
+                elif '_version' in version_refs:
+                    print(f'+ {libname} {lib._version}')
+                else:
+                    print(f'+ {libname} (unknown version)')
+
     def init_graphics(self):
         # We initialise libraries on demand, so that we can run aware without X11
         # to notify an X11 'aware' for the same user
@@ -683,18 +701,23 @@ class GUI:
             self._GdkPixbuf = GdkPixbuf
 
             # Wayland-only
-            if sys.env['WAYLAND_DISPLAY'] is not None:
+            if os.environ['WAYLAND_DISPLAY'] is not None:
+                self._wayland = True
+                self._mode_description = 'XWayland fallback (GtkLayerShell not initialised)'
                 try:
-                    print('Trying for Wayland')
                     gi.require_version('GtkLayerShell', '0.1')
                     from gi.repository import GtkLayerShell
                     self._GtkLayerShell = GtkLayerShell
-                    self.wayland = True
-                except ValueError:
-                    pass
+                    self._mode_description = 'Wayland with GtkLayerShell'
+                except ValueError as e:
+                    print(f'While trying to load GtkLayerShell: {e}', file=sys.stderr)
         except RuntimeError:
             self.failed = True
             raise NoGUIException()
+
+    @property
+    def wayland(self):
+        return self._wayland and self._GtkLayerShell
 
     def refresh_on_idle(self):
         self.init_graphics()
@@ -908,17 +931,12 @@ class GUI:
                 '''Recompute size and trigger redraw'''
                 if self.dobject is not None:
                     self.dobject.set_window(self.topwin)
-                    print('A')
                     self.topwin.width = self.dobject.get_width() + self.get_pad_width()
-                    print('C')
                     self.topwin.height = self.dobject.get_height() + self.get_pad_height()
-                    print('B')
                     self.resize(self.topwin.width, self.topwin.height)
-                    print(self.topwin.width, self.topwin.height)
                     self.topwin.queue_draw()
                     #gui.GtkLayerShell.init_for_window(self.topwin)
                     #self.topwin.show_all()
-                    print('D')
 
             def __do_unrealize(self):
                 '''GTK widget window unrealisation'''
@@ -1442,6 +1460,9 @@ class Main(object):
         parser.add_argument('-m', '--message', dest='action', action='store_const',
                             const=self.display, default=self.display,
                             help='Display message (default)')
+        parser.add_argument('--test-display', dest='action', action='store_const',
+                            const=self.check_display, default=self.display,
+                            help='Sanity check which display output we are using and print error messages')
         self.parser = parser
         self.pipe = AwarePipe()
 
@@ -1472,6 +1493,10 @@ class Main(object):
             newline = True
             body = '\n'.join(prefix + s for s in text_fragments)
             return body
+
+    def check_display(self):
+        GUI.init_graphics()
+        GUI.print_info()
 
     def display(self):
         '''Toplevel command: print out messages'''
