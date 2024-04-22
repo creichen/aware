@@ -167,6 +167,7 @@ class Config(object):
     line_separator_width = 0
     max_width = 768
     max_height = 256
+    flash = 0
 
 
 ################################################################################
@@ -732,7 +733,28 @@ class GUI:
         self.init_graphics()
         gui = self
 
-        class AwareWindow(self._Gtk.Window):
+        class AwareWindow:
+            def __init__(self):
+                self.fresh = True
+
+            def flash(self, cr):
+                if self.fresh and Config.flash:
+                    cr.set_operator(cairo.Operator.OVER)
+                    cr.set_source_rgba(1, 1, 1, 1)
+                    cr.rectangle(0, 0, self.get_canvas_width(), self.get_canvas_height())
+                    cr.fill()
+                    self.update(recompute_dimensions=False,
+                                flash=False)
+                self.fresh = False
+
+            def update(self, recompute_dimensions=True, redraw=True, flash=True):
+                self.fresh = flash
+                if recompute_dimensions:
+                    self.update_dimensions()
+                if redraw:
+                    self.queue_draw()
+
+        class X11AwareWindow(self._Gtk.Window, AwareWindow):
             __gtype_name__ = 'AwareWindow'
             '''Notification window'''
 
@@ -765,11 +787,11 @@ class GUI:
             def get_dobject(self):
                 return self.dobject
 
-            def update(self, recompute_dimensions=True, redraw=True):
-                if recompute_dimensions:
-                    self.update_dimensions()
-                if redraw:
-                    self.queue_draw()
+            # def update(self, recompute_dimensions=True, redraw=True):
+            #     if recompute_dimensions:
+            #         self.update_dimensions()
+            #     if redraw:
+            #         self.queue_draw()
 
             def set_dobject(self, dobject, redraw=True):
                 self.dobject = dobject
@@ -824,6 +846,12 @@ class GUI:
                 # I doubt that this ever gets called for this widget
                 self.window.set_user_data(None)
 
+            def get_canvas_width(self):
+                return self.width
+
+            def get_canvas_height(self):
+                return self.height
+
             def draw_canvas(self, area, cr):
                 '''GTK notification that we should redraw'''
 
@@ -845,7 +873,7 @@ class GUI:
                 cr.save()
                 cr.set_source_rgba(*self.fg_color)
                 cr.rectangle(2, -2,
-                             self.width, self.height)
+                             self.get_cavas_width(), self.get_canvas_height())
                 cr.set_line_width(1.0)
                 cr.set_line_join(cairo.LINE_JOIN_ROUND)
                 cr.stroke()
@@ -854,8 +882,10 @@ class GUI:
                 # draw dobject
                 self.dobject.draw_to(cr, self.pad_left, self.pad_top)
 
+                self.flash(cr)
 
-        class WaylandAwareWindow:
+
+        class WaylandAwareWindow(AwareWindow):
             '''Notification window for Wayland'''
 
             def __init__(self, dobject):
@@ -910,11 +940,14 @@ class GUI:
             def get_dobject(self):
                 return self.dobject
 
-            def update(self, recompute_dimensions=True, redraw=True):
-                if recompute_dimensions or True:
-                    self.update_dimensions()
-                if redraw or True:
-                    self.topwin.queue_draw()
+            def queue_draw(self):
+                self.topwin.queue_draw()
+
+            # def update(self, recompute_dimensions=True, redraw=True):
+            #     if recompute_dimensions or True:
+            #         self.update_dimensions()
+            #     if redraw or True:
+            #         self.topwin.queue_draw()
 
             def set_dobject(self, dobject, redraw=True):
                 self.dobject = dobject
@@ -948,6 +981,12 @@ class GUI:
                 # I doubt that this ever gets called for this widget
                 self.window.set_user_data(None)
 
+            def get_canvas_width(self):
+                return self.topwin.width
+
+            def get_canvas_height(self):
+                return self.topwin.height
+
             def draw_canvas(self, area, cr):
                 '''GTK notification that we should redraw'''
 
@@ -969,7 +1008,7 @@ class GUI:
                 cr.save()
                 cr.set_source_rgba(*self.topwin.fg_color)
                 cr.rectangle(2, -2,
-                             self.topwin.width, self.topwin.height)
+                             self.get_canvas_width(), self.get_canvas_height())
                 cr.set_line_width(1.0)
                 cr.set_line_join(cairo.LINE_JOIN_ROUND)
                 cr.stroke()
@@ -978,10 +1017,12 @@ class GUI:
                 # draw dobject
                 self.dobject.draw_to(cr, self.topwin.pad_left, self.topwin.pad_top)
 
+                self.flash(cr)
+
         if gui.wayland:
             self.notifier = WaylandAwareWindow(DBox())
         else:
-            self.notifier = AwareWindow(DBox())
+            self.notifier = X11AwareWindow(DBox())
         return self.notifier
 
     def update_notifier(self, message):
