@@ -747,7 +747,7 @@ class GUI:
                                 flash=False)
                 self.fresh = False
 
-            def update(self, recompute_dimensions=True, redraw=True, flash=True):
+            def update(self, recompute_dimensions=True, redraw=True, flash=False):
                 self.fresh = flash
                 if recompute_dimensions:
                     self.update_dimensions()
@@ -782,7 +782,7 @@ class GUI:
                 self.canvas = gui._Gtk.DrawingArea()
                 self.canvas.connect("draw", self.draw_canvas)
                 self.add(self.canvas)
-                self.update(recompute_dimensions=False)
+                self.update(recompute_dimensions=False, flash=True)
 
             def get_dobject(self):
                 return self.dobject
@@ -913,7 +913,7 @@ class GUI:
                 self.topwin.canvas = gui._Gtk.DrawingArea()
                 self.topwin.canvas.connect("draw", self.draw_canvas)
                 self.topwin.add(self.topwin.canvas)
-                self.update(recompute_dimensions=False)
+                self.update(recompute_dimensions=False, flash=True)
 
                 gui.GtkLayerShell.init_for_window(self.topwin)
                 gui.GtkLayerShell.auto_exclusive_zone_enable(self.topwin)
@@ -1032,7 +1032,7 @@ class GUI:
             if sp.parse():
                 def update():
                     sp.add_dobjects(self.notifier.get_dobject())
-                    self.notifier.update()
+                    self.notifier.update(flash=True)
                 self._GLib.idle_add(update)
         except Exception as e:
             raise e
