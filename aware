@@ -158,6 +158,7 @@ class Config(object):
 
     pipe_file_name = os.path.expanduser('~/.aware-pipe')
     pid_file_name = os.path.expanduser('~/.aware-pid')
+    monitor = -1
     update_safety_delay = 1.5   # amount of seconds after an update during which we reject SHUTDOWN message
     font = 'Sans Serif 8'
     bar_color = 'gray'
@@ -916,6 +917,13 @@ class GUI:
                 self.update(recompute_dimensions=False, flash=True)
 
                 gui.GtkLayerShell.init_for_window(self.topwin)
+
+                if Config.monitor > -1:
+                    print(f'monitor={Config.monitor}')
+                    monitors_nr = gui._Gdk.Display.get_default().get_n_monitors()
+                    monitors = [gui._Gdk.Display.get_default().get_monitor(i) for i in range(0, monitors_nr)]
+                    gui.GtkLayerShell.set_monitor(self.topwin, monitors[int(Config.monitor)])
+
                 gui.GtkLayerShell.auto_exclusive_zone_enable(self.topwin)
                 gui.GtkLayerShell.set_margin(self.topwin, gui.GtkLayerShell.Edge.TOP, 0)
                 gui.GtkLayerShell.set_margin(self.topwin, gui.GtkLayerShell.Edge.RIGHT, 0)
@@ -926,6 +934,7 @@ class GUI:
                 gui.GtkLayerShell.set_anchor(self.topwin, gui.GtkLayerShell.Edge.TOP, 1)
                 gui.GtkLayerShell.set_layer(self.topwin, gui.GtkLayerShell.Layer.OVERLAY)
                 gui.GtkLayerShell.set_namespace(self.topwin, 'aware')
+
 
                 #self.topwin.resize(100,20)
                 #self.do_realize()
