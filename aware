@@ -919,7 +919,6 @@ class GUI:
                 gui.GtkLayerShell.init_for_window(self.topwin)
 
                 if Config.monitor > -1:
-                    print(f'monitor={Config.monitor}')
                     monitors_nr = gui._Gdk.Display.get_default().get_n_monitors()
                     monitors = [gui._Gdk.Display.get_default().get_monitor(i) for i in range(0, monitors_nr)]
                     gui.GtkLayerShell.set_monitor(self.topwin, monitors[int(Config.monitor)])
