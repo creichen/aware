@@ -924,6 +924,9 @@ class GUI:
 
                 gui.GtkLayerShell.set_anchor(self.topwin, gui.GtkLayerShell.Edge.RIGHT, 1)
                 gui.GtkLayerShell.set_anchor(self.topwin, gui.GtkLayerShell.Edge.TOP, 1)
+                gui.GtkLayerShell.set_layer(self.topwin, gui.GtkLayerShell.Layer.OVERLAY)
+                gui.GtkLayerShell.set_namespace(self.topwin, 'aware')
+
                 #self.topwin.resize(100,20)
                 #self.do_realize()
                 self.window = self.topwin
